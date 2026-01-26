@@ -404,7 +404,7 @@ def convert_nado_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
         # Build CCXT order
         ccxt_order = {
             'id': order.get('digest', str(order.get('nonce', ''))),
-            'clientOrderId': str(order.get('nonce', '') & ((1 << 20) - 1)) if order.get('nonce') else '',
+            'clientOrderId': str(int(order.get('nonce', 0)) & ((1 << 20) - 1)) if order.get('nonce') else '',
             'datetime': datetime_str,
             'timestamp': timestamp_ms,
             'lastTradeTimestamp': None,

@@ -160,17 +160,20 @@ class NadoAdapter(ExchangeInterface):
         """Convert x18 precision integer to float."""
         return float(Decimal(str(value)) / X18)
 
-    def _round_price(self, price: float) -> float:
-        """Round price to valid increment."""
-        if self.price_increment > 0:
-            return round(price / self.price_increment) * self.price_increment
-        return price
+    def _round_price_x18(self, price_x18: int) -> int:
+        """Round price_x18 to valid increment (ensures divisibility)."""
+        # price_increment_x18 = 0.1 * 10^18 = 100000000000000000
+        price_increment_x18 = self._to_x18(self.price_increment)
+        if price_increment_x18 > 0:
+            return (price_x18 // price_increment_x18) * price_increment_x18
+        return price_x18
 
-    def _round_size(self, size: float) -> float:
-        """Round size to valid increment."""
-        if self.size_increment > 0:
-            return round(size / self.size_increment) * self.size_increment
-        return size
+    def _round_size_x18(self, size_x18: int) -> int:
+        """Round size_x18 to valid increment."""
+        size_increment_x18 = self._to_x18(self.size_increment)
+        if size_increment_x18 > 0:
+            return (size_x18 // size_increment_x18) * size_increment_x18
+        return size_x18
 
     def _build_appendix(
         self,
@@ -310,16 +313,19 @@ class NadoAdapter(ExchangeInterface):
             nonce = self._gen_order_nonce()
             expiration = int(time.time()) + 86400 * 30  # 30 days expiration
 
-            # Round price and amount to valid increments
-            price = self._round_price(price)
-            amount = self._round_size(amount)
-            
-            logger.debug(f"Placing order: is_ask={is_ask}, price={price}, amount={amount}")
-
-            # Convert to x18 precision
+            # Convert to x18 precision first
             price_x18 = self._to_x18(price)
+            amount_x18 = self._to_x18(amount)
+            
+            # Round to valid increments at x18 level (ensures exact divisibility)
+            price_x18 = self._round_price_x18(price_x18)
+            amount_x18 = self._round_size_x18(amount_x18)
+            
             # Amount: positive for buy, negative for sell
-            amount_x18 = self._to_x18(amount) if not is_ask else -self._to_x18(amount)
+            if is_ask:
+                amount_x18 = -amount_x18
+            
+            logger.debug(f"Placing order: is_ask={is_ask}, price_x18={price_x18}, amount_x18={amount_x18}")
 
             # Build appendix (POST_ONLY by default)
             appendix = self._build_appendix(order_type=3)  # POST_ONLY
@@ -427,15 +433,15 @@ class NadoAdapter(ExchangeInterface):
             nonce = self._gen_order_nonce()
             expiration = int(time.time()) + 60  # 1 minute expiration for market order
 
-            # Round amount to valid increment
-            amount = self._round_size(amount)
-            
             # For market orders, use a very high/low price depending on side
             market_price = price * 1.1 if not is_ask else price * 0.9
-            market_price = self._round_price(market_price)
             
-            price_x18 = self._to_x18(market_price)
-            amount_x18 = self._to_x18(amount) if not is_ask else -self._to_x18(amount)
+            # Convert to x18 and round
+            price_x18 = self._round_price_x18(self._to_x18(market_price))
+            amount_x18 = self._round_size_x18(self._to_x18(amount))
+            
+            if is_ask:
+                amount_x18 = -amount_x18
 
             # Build appendix with IOC order type
             appendix = self._build_appendix(order_type=1)  # IOC
