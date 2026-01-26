@@ -75,11 +75,16 @@ class NadoAdapter(ExchangeInterface):
         self.env = os.getenv('NADO_ENV', 'testnet').lower()
 
         # Set endpoints based on environment
+        # Note: As of Jan 2026, Nado mainnet may not be fully available
+        # Default to testnet for safety
         if self.env == 'mainnet':
+            # Mainnet endpoints (may not be available yet)
             self.gateway_rest = os.getenv('NADO_GATEWAY_REST', 'https://gateway.nado.xyz/v1')
             self.gateway_ws = os.getenv('NADO_GATEWAY_WS', 'wss://gateway.nado.xyz/v1/ws')
             self.subscriptions_ws = os.getenv('NADO_SUBSCRIPTIONS_WS', 'wss://gateway.nado.xyz/v1/subscribe')
+            logger.warning("Using Nado mainnet - if connection fails, try NADO_ENV='testnet'")
         else:
+            # Testnet endpoints (recommended for testing)
             self.gateway_rest = os.getenv('NADO_GATEWAY_REST', 'https://gateway.test.nado.xyz/v1')
             self.gateway_ws = os.getenv('NADO_GATEWAY_WS', 'wss://gateway.test.nado.xyz/v1/ws')
             self.subscriptions_ws = os.getenv('NADO_SUBSCRIPTIONS_WS', 'wss://gateway.test.nado.xyz/v1/subscribe')
@@ -192,6 +197,10 @@ class NadoAdapter(ExchangeInterface):
                     data = await response.json()
                     if data.get('status') == 'success':
                         return data.get('data', {})
+                    else:
+                        logger.warning(f"Contracts query failed: {data.get('error', 'Unknown error')}")
+                else:
+                    logger.warning(f"Contracts query HTTP error: {response.status}")
         except Exception as e:
             logger.error(f"Failed to fetch contracts: {e}")
         return {}
@@ -722,21 +731,47 @@ class NadoAdapter(ExchangeInterface):
         if proxy:
             logger.warning(f"Nado adapter: Proxy support ({proxy}) may not be fully implemented.")
 
-        # Initialize WebSocket connection
+        # Try to initialize WebSocket connection
         if not self.ws_initialized:
             await self._initialize_ws()
 
-        # Subscribe to streams
-        if 'market_stats' in callbacks:
-            await self._subscribe_market_stats()
+        # If WebSocket is available, subscribe to streams
+        if self.ws_initialized and self.subscriptions_ws_connection:
+            if 'market_stats' in callbacks:
+                await self._subscribe_market_stats()
 
-        if 'orders' in callbacks:
-            await self._subscribe_orders()
+            if 'orders' in callbacks:
+                await self._subscribe_orders()
 
-        if 'positions' in callbacks:
-            await self._subscribe_positions()
+            if 'positions' in callbacks:
+                await self._subscribe_positions()
 
-        logger.info(f"Nado subscribe: Registered callbacks for {list(callbacks.keys())}")
+            logger.info(f"Nado subscribe: Registered WebSocket callbacks for {list(callbacks.keys())}")
+        else:
+            # WebSocket not available, start REST polling task
+            logger.info("WebSocket not available, starting REST API polling for market data")
+            asyncio.create_task(self._rest_polling_task())
+
+    async def _rest_polling_task(self):
+        """Poll REST API for updates when WebSocket is not available."""
+        while True:
+            try:
+                # Poll market prices for mark_price
+                if 'market_stats' in self.callbacks:
+                    prices = await self._rest_query("market_prices", {"product_id": self.product_id})
+                    if prices:
+                        mark_price = self._from_x18(int(prices.get('mark_price_x18', '0')))
+                        stats = {'mark_price': mark_price}
+                        callback = self.callbacks['market_stats']
+                        if asyncio.iscoroutinefunction(callback):
+                            asyncio.create_task(callback(str(self.market_id), stats))
+                        else:
+                            callback(str(self.market_id), stats)
+
+                await asyncio.sleep(5)  # Poll every 5 seconds
+            except Exception as e:
+                logger.error(f"REST polling error: {e}")
+                await asyncio.sleep(10)
 
     async def _initialize_ws(self):
         """Initialize WebSocket connection."""
@@ -745,13 +780,14 @@ class NadoAdapter(ExchangeInterface):
                 self.ws_session = aiohttp.ClientSession()
 
             # Connect to subscriptions WebSocket
+            logger.info(f"Connecting to WebSocket: {self.subscriptions_ws}")
             self.subscriptions_ws_connection = await self.ws_session.ws_connect(
                 self.subscriptions_ws,
                 compress=15  # Enable permessage-deflate
             )
 
             self.ws_initialized = True
-            logger.info("Nado WebSocket initialized")
+            logger.info("Nado WebSocket initialized successfully")
 
             # Start listening for messages
             asyncio.create_task(self._ws_listener())
@@ -759,8 +795,18 @@ class NadoAdapter(ExchangeInterface):
             # Start ping task to keep connection alive
             asyncio.create_task(self._ws_ping_task())
 
+        except aiohttp.ClientResponseError as e:
+            logger.error(f"WebSocket connection failed (HTTP {e.status}): {e.message}")
+            logger.warning("WebSocket unavailable - will use REST API polling for updates")
+            self.ws_initialized = False
+        except aiohttp.WSServerHandshakeError as e:
+            logger.error(f"WebSocket handshake failed: {e}")
+            logger.warning("WebSocket unavailable - will use REST API polling for updates")
+            self.ws_initialized = False
         except Exception as e:
-            logger.error(f"Failed to initialize WebSocket: {e}", exc_info=True)
+            logger.error(f"Failed to initialize WebSocket: {e}")
+            logger.warning("WebSocket unavailable - will use REST API polling for updates")
+            self.ws_initialized = False
 
     async def _ws_ping_task(self):
         """Send ping frames every 30 seconds to keep connection alive."""
@@ -920,14 +966,23 @@ class NadoAdapter(ExchangeInterface):
             self.endpoint_address = contracts.get('endpoint')
 
             if not self.chain_id or not self.endpoint_address:
-                logger.warning("Could not fetch contract info, using defaults")
-                # Default values for testnet
-                self.chain_id = 421614  # Arbitrum Sepolia
-                self.endpoint_address = "0x0000000000000000000000000000000000000000"
+                logger.warning("Could not fetch contract info from API, using defaults for testnet")
+                # Default values for testnet (Arbitrum Sepolia)
+                if self.env == 'testnet':
+                    self.chain_id = 421614  # Arbitrum Sepolia
+                    self.endpoint_address = "0xbBfF621b442B8F53Daa9541f5Bcf5B752C5F0421"  # Testnet endpoint
+                else:
+                    # Mainnet defaults (Arbitrum One)
+                    self.chain_id = 42161  # Arbitrum One
+                    self.endpoint_address = "0x0000000000000000000000000000000000000000"
+                    logger.warning("Mainnet contract address not configured - orders may fail")
 
-            logger.info(f"Nado client initialized: chain_id={self.chain_id}, endpoint={self.endpoint_address}")
+            logger.info(f"Nado client initialized: env={self.env}, chain_id={self.chain_id}, endpoint={self.endpoint_address}")
         except Exception as e:
             logger.error(f"Failed to initialize client: {e}", exc_info=True)
+            # Set fallback values
+            self.chain_id = 421614
+            self.endpoint_address = "0xbBfF621b442B8F53Daa9541f5Bcf5B752C5F0421"
 
     async def create_auth_token(self) -> Tuple[str, str]:
         """
