@@ -187,8 +187,8 @@ async def check_position_limits(position_size: float):
     else:
         trading_state.grid_open_spread_alert = False
         trading_state.grid_close_spread_alert = False
-        if len(trading_state.original_open_prices) > 0:
-            # 重置价差为基础价差
+        if len(trading_state.original_open_prices) > 1:
+            # 重置价差为基础价差（需要至少2个价格点来计算价差）
             trading_state.base_grid_single_price = abs(
                 trading_state.original_open_prices[1]
                 - trading_state.original_open_prices[0]

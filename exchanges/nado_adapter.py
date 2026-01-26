@@ -809,14 +809,56 @@ class NadoAdapter(ExchangeInterface):
         asyncio.create_task(self._rest_polling_task())
 
     async def _rest_polling_task(self):
-        """Poll REST API for updates when WebSocket is not available."""
+        """Poll REST API for updates (backup for WebSocket)."""
+        poll_count = 0
         while True:
             try:
+                # Poll market price every cycle
                 await self._poll_market_price()
+                
+                # Poll orders and positions every 2 cycles (6 seconds)
+                # This is more expensive so we don't do it as frequently
+                poll_count += 1
+                if poll_count % 2 == 0:
+                    await self._poll_orders()
+                    await self._poll_positions()
+                
                 await asyncio.sleep(3)  # Poll every 3 seconds
             except Exception as e:
                 logger.error(f"REST polling error: {e}")
                 await asyncio.sleep(5)
+
+    async def _poll_orders(self):
+        """Poll orders and trigger callback."""
+        try:
+            if 'orders' not in self.callbacks or not self.callbacks['orders']:
+                return
+            
+            orders = await self.get_orders()
+            if orders:
+                callback = self.callbacks['orders']
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(self.address, orders))
+                else:
+                    callback(self.address, orders)
+        except Exception as e:
+            logger.error(f"Poll orders error: {e}")
+
+    async def _poll_positions(self):
+        """Poll positions and trigger callback."""
+        try:
+            if 'positions' not in self.callbacks or not self.callbacks['positions']:
+                return
+            
+            positions = await self.get_positions()
+            if positions:
+                callback = self.callbacks['positions']
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(self.address, positions))
+                else:
+                    callback(self.address, positions)
+        except Exception as e:
+            logger.error(f"Poll positions error: {e}")
 
     async def _poll_market_price(self):
         """Poll market price once and trigger callback."""
