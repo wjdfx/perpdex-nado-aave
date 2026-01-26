@@ -11,13 +11,20 @@ try:
 except ImportError:
     GRVT_AVAILABLE = False
 
+# Import Nado adapter if available
+try:
+    from .nado_adapter import NadoAdapter
+    NADO_AVAILABLE = True
+except ImportError:
+    NADO_AVAILABLE = False
+
 
 def create_exchange_adapter(exchange_type: str = "lighter", **kwargs) -> Optional[ExchangeInterface]:
     """
     Factory function to create exchange adapter based on type.
 
     Args:
-        exchange_type: Type of exchange ("lighter" or "grvt")
+        exchange_type: Type of exchange ("lighter", "grvt", or "nado")
         **kwargs: Additional parameters for adapter initialization
 
     Returns:
@@ -50,6 +57,19 @@ def create_exchange_adapter(exchange_type: str = "lighter", **kwargs) -> Optiona
         return GrvtAdapter(
             market_id=market_id,
             symbol=symbol,
+        )
+    elif exchange_type.lower() == "nado":
+        if not NADO_AVAILABLE:
+            raise ImportError("Nado adapter not available. Please install required dependencies (eth-account, aiohttp).")
+
+        market_id = kwargs.get('market_id', 0)
+        product_id = kwargs.get('product_id', None)
+        subaccount_name = kwargs.get('subaccount_name', 'default')
+
+        return NadoAdapter(
+            market_id=market_id,
+            product_id=product_id,
+            subaccount_name=subaccount_name,
         )
     else:
         return None

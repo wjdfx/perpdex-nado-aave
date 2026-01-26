@@ -1,0 +1,24 @@
+# lighter configuration
+BASE_URL=https://mainnet.zklighter.elliot.ai
+L1_ADDRESS=''
+ACCOUNT_INDEX=''
+API_KEY_INDEX=''
+API_KEY_PRIVATE_KEY=''
+
+# grvt configuration
+GRVT_PRIVATE_KEY = ''
+GRVT_API_KEY=''
+GRVT_TRADING_ACCOUNT_ID = ''
+GRVT_ENV = ''
+
+# Exchange configuration
+EXCHANGE_TYPE=lighter
+
+# Logging configuration
+LOG_LEVEL='INFO'
+LOG_FORMAT='%(asctime)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s'
+LOG_FILE_DIR=./logs
+
+# standx configuration
+STANDX_WALLET_ADDRESS=''
+STANDX_PRIVATE_KEY=''

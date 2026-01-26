@@ -22,13 +22,15 @@ def normalize_order_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         CCXT standardized order dictionary
     """
-    # Determine if this is a Lighter, GRVT, or StandX order based on field structure
+    # Determine if this is a Lighter, GRVT, StandX, or Nado order based on field structure
     if is_lighter_order(order):
         return convert_lighter_to_ccxt(order)
     elif is_grvt_order(order):
         return convert_grvt_to_ccxt(order)
     elif is_standx_order(order):
         return convert_standx_to_ccxt(order)
+    elif is_nado_order(order):
+        return convert_nado_to_ccxt(order)
     else:
         logger.warning(f"Unknown order format: {order}")
         return convert_unknown_to_ccxt(order)
@@ -68,6 +70,19 @@ def is_standx_order(order: Dict[str, Any]) -> bool:
         'status' in order and
         'price' in order and
         'qty' in order
+    )
+
+
+def is_nado_order(order: Dict[str, Any]) -> bool:
+    """Check if order is in Nado format."""
+    # Nado orders have product_id, sender, price_x18, amount, expiration, nonce, digest fields
+    return (
+        'product_id' in order and
+        'sender' in order and
+        'price_x18' in order and
+        'amount' in order and
+        'expiration' in order and
+        'nonce' in order
     )
 
 
@@ -306,6 +321,120 @@ def convert_standx_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
             'clientOrderId': str(order.get('cl_ord_id', '')),
             'status': 'unknown',
             'symbol': 'BTC/USDT',
+            'side': 'buy',
+            'price': 0,
+            'amount': 0,
+            'filled': 0,
+            'remaining': 0,
+            'cost': 0,
+            'info': order,
+            'error': str(e)
+        }
+
+
+def convert_nado_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert Nado order format to CCXT format."""
+    try:
+        # Map order_type from appendix
+        order_type_mapping = {
+            'default': 'limit',
+            'ioc': 'limit',
+            'fok': 'limit',
+            'post_only': 'limit'
+        }
+        
+        # Map status
+        status_mapping = {
+            'open': 'open',
+            'filled': 'closed',
+            'canceled': 'canceled',
+            'expired': 'expired',
+            'rejected': 'rejected'
+        }
+        
+        # Nado uses x18 precision (10^18)
+        X18 = 10 ** 18
+        
+        # Parse price and amount from x18 format
+        price_x18 = int(order.get('price_x18', '0'))
+        amount_raw = int(order.get('amount', '0'))
+        unfilled_amount_raw = int(order.get('unfilled_amount', amount_raw))
+        
+        price = price_x18 / X18
+        amount = abs(amount_raw) / X18
+        unfilled = abs(unfilled_amount_raw) / X18
+        filled = amount - unfilled
+        
+        # Determine side from amount sign (positive = buy, negative = sell)
+        side = 'buy' if amount_raw > 0 else 'sell'
+        
+        # Get order type from order_type field or appendix
+        nado_order_type = order.get('order_type', 'default')
+        ccxt_order_type = order_type_mapping.get(nado_order_type, 'limit')
+        
+        # Map time in force based on order type
+        time_in_force_mapping = {
+            'default': 'GTC',
+            'ioc': 'IOC',
+            'fok': 'FOK',
+            'post_only': 'GTC'
+        }
+        time_in_force = time_in_force_mapping.get(nado_order_type, 'GTC')
+        
+        # Get timestamp from placed_at if available
+        placed_at = order.get('placed_at', 0)
+        timestamp_ms = placed_at * 1000 if placed_at else None
+        datetime_str = datetime.fromtimestamp(placed_at).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3] if placed_at else None
+        
+        # Get product_id and map to symbol
+        product_id = order.get('product_id', 0)
+        product_symbol_map = {
+            0: 'USDT0',
+            1: 'KBTC',
+            2: 'BTC-PERP',
+            3: 'WETH',
+            4: 'ETH-PERP',
+            5: 'USDC',
+            8: 'SOL-PERP',
+            10: 'XRP-PERP',
+            14: 'BNB-PERP',
+        }
+        symbol = product_symbol_map.get(product_id, f'PRODUCT_{product_id}')
+        
+        # Build CCXT order
+        ccxt_order = {
+            'id': order.get('digest', str(order.get('nonce', ''))),
+            'clientOrderId': str(order.get('nonce', '') & ((1 << 20) - 1)) if order.get('nonce') else '',
+            'datetime': datetime_str,
+            'timestamp': timestamp_ms,
+            'lastTradeTimestamp': None,
+            'status': status_mapping.get(order.get('status', 'open'), 'open'),
+            'symbol': symbol,
+            'type': ccxt_order_type,
+            'timeInForce': time_in_force,
+            'side': side,
+            'price': price,
+            'average': price,  # Nado doesn't provide average fill price in order query
+            'amount': amount,
+            'filled': filled,
+            'remaining': unfilled,
+            'cost': filled * price,
+            'trades': [],
+            'fee': {},
+            'reduceOnly': False,  # Would need to parse from appendix
+            'postOnly': nado_order_type == 'post_only',
+            'info': order  # Store original order as info
+        }
+        
+        return ccxt_order
+        
+    except Exception as e:
+        logger.error(f"Error converting Nado order to CCXT: {e}", exc_info=True)
+        return {
+            'id': order.get('digest', ''),
+            'clientOrderId': str(order.get('nonce', '')),
+            'status': 'unknown',
+            'symbol': 'ETH-PERP',
             'side': 'buy',
             'price': 0,
             'amount': 0,

@@ -21,5 +21,10 @@ base58
 requests
 eth-account
 
+# Nado 依赖 (eth-account, aiohttp 已在上面列出)
+# 使用 EIP712 签名的依赖
+# eth-account (已包含)
+# aiohttp (已包含)
+
 #ccxt
 ccxt
