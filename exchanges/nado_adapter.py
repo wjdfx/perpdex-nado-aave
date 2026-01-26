@@ -800,6 +800,8 @@ class NadoAdapter(ExchangeInterface):
 
             if 'orders' in callbacks:
                 await self._subscribe_orders()
+                # Also subscribe to fills to detect order executions
+                await self._subscribe_fills()
 
             if 'positions' in callbacks:
                 await self._subscribe_positions()
@@ -1029,8 +1031,33 @@ class NadoAdapter(ExchangeInterface):
                 callback(self.address, positions)
 
     async def _handle_fill(self, data: dict):
-        """Handle fill events (for tracking trades)."""
-        logger.debug(f"Fill event: {data}")
+        """Handle fill events (order filled)."""
+        logger.info(f"Fill event received: {data}")
+        
+        if 'orders' in self.callbacks and self.callbacks['orders']:
+            # Extract fill information
+            fill_data = data.get('fill', data)
+            digest = fill_data.get('digest', fill_data.get('order_digest', ''))
+            
+            # Create a filled order object
+            filled_order = {
+                'digest': digest,
+                'status': 'filled',  # Mark as filled
+                'product_id': fill_data.get('product_id', self.product_id),
+                'price_x18': fill_data.get('price_x18', fill_data.get('fill_price_x18', '0')),
+                'amount': fill_data.get('amount', fill_data.get('fill_amount', '0')),
+                'unfilled_amount': '0',  # Fully filled
+                'nonce': fill_data.get('nonce', ''),
+            }
+            
+            normalized_orders = normalize_orders_list([filled_order])
+            if normalized_orders:
+                logger.info(f"Processing filled order: {normalized_orders[0].get('id')}, status={normalized_orders[0].get('status')}")
+                callback = self.callbacks['orders']
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(self.address, normalized_orders))
+                else:
+                    callback(self.address, normalized_orders)
 
     async def _subscribe_market_stats(self):
         """Subscribe to best bid/offer stream."""
@@ -1086,6 +1113,25 @@ class NadoAdapter(ExchangeInterface):
                 logger.info(f"Subscribed to position_change for product {self.product_id}")
         except Exception as e:
             logger.error(f"Failed to subscribe to positions: {e}")
+
+    async def _subscribe_fills(self):
+        """Subscribe to fill events (order executions)."""
+        try:
+            sender = self._get_sender_bytes32()
+            message = {
+                "method": "subscribe",
+                "stream": {
+                    "type": "fill",
+                    "subaccount": sender,
+                    "product_id": self.product_id
+                },
+                "id": 4
+            }
+            if self.subscriptions_ws_connection and not self.subscriptions_ws_connection.closed:
+                await self.subscriptions_ws_connection.send_json(message)
+                logger.info(f"Subscribed to fill events for product {self.product_id}")
+        except Exception as e:
+            logger.error(f"Failed to subscribe to fills: {e}")
 
     async def close(self):
         """Close connections."""
