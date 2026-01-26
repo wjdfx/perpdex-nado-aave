@@ -114,6 +114,11 @@ class NadoAdapter(ExchangeInterface):
         self.endpoint_address: Optional[str] = None
         self.order_digests: Dict[str, str] = {}  # client_order_id -> digest mapping
 
+        # Product trading parameters (will be fetched during initialization)
+        self.price_increment: float = 0.1  # Default: $0.1
+        self.size_increment: float = 0.001  # Default: 0.001
+        self.min_size: float = 100.0  # Default: $100 notional
+
         logger.info(f"Nado Adapter initialized with env={self.env}, product_id={self.product_id}")
 
     def _get_sender_bytes32(self) -> str:
@@ -154,6 +159,18 @@ class NadoAdapter(ExchangeInterface):
     def _from_x18(self, value: int) -> float:
         """Convert x18 precision integer to float."""
         return float(Decimal(str(value)) / X18)
+
+    def _round_price(self, price: float) -> float:
+        """Round price to valid increment."""
+        if self.price_increment > 0:
+            return round(price / self.price_increment) * self.price_increment
+        return price
+
+    def _round_size(self, size: float) -> float:
+        """Round size to valid increment."""
+        if self.size_increment > 0:
+            return round(size / self.size_increment) * self.size_increment
+        return size
 
     def _build_appendix(
         self,
@@ -293,6 +310,12 @@ class NadoAdapter(ExchangeInterface):
             nonce = self._gen_order_nonce()
             expiration = int(time.time()) + 86400 * 30  # 30 days expiration
 
+            # Round price and amount to valid increments
+            price = self._round_price(price)
+            amount = self._round_size(amount)
+            
+            logger.debug(f"Placing order: is_ask={is_ask}, price={price}, amount={amount}")
+
             # Convert to x18 precision
             price_x18 = self._to_x18(price)
             # Amount: positive for buy, negative for sell
@@ -404,8 +427,14 @@ class NadoAdapter(ExchangeInterface):
             nonce = self._gen_order_nonce()
             expiration = int(time.time()) + 60  # 1 minute expiration for market order
 
+            # Round amount to valid increment
+            amount = self._round_size(amount)
+            
             # For market orders, use a very high/low price depending on side
-            price_x18 = self._to_x18(price * 1.1) if not is_ask else self._to_x18(price * 0.9)
+            market_price = price * 1.1 if not is_ask else price * 0.9
+            market_price = self._round_price(market_price)
+            
+            price_x18 = self._to_x18(market_price)
             amount_x18 = self._to_x18(amount) if not is_ask else -self._to_x18(amount)
 
             # Build appendix with IOC order type
@@ -1034,7 +1063,11 @@ class NadoAdapter(ExchangeInterface):
                     self.chain_id = 763373  # Ink Sepolia chain_id
                     self.endpoint_address = "0x698D87105274292B5673367DEC81874Ce3633Ac2"
 
+            # Fetch product trading parameters
+            await self._fetch_product_params()
+
             logger.info(f"Nado client initialized: env={self.env}, chain_id={self.chain_id}, endpoint={self.endpoint_address}")
+            logger.info(f"Product {self.product_id} params: price_increment={self.price_increment}, size_increment={self.size_increment}, min_size={self.min_size}")
         except Exception as e:
             logger.error(f"Failed to initialize client: {e}", exc_info=True)
             # Set fallback values based on environment
@@ -1044,6 +1077,40 @@ class NadoAdapter(ExchangeInterface):
             else:
                 self.chain_id = 763373
                 self.endpoint_address = "0x698D87105274292B5673367DEC81874Ce3633Ac2"
+
+    async def _fetch_product_params(self) -> None:
+        """Fetch product trading parameters (price/size increments, min_size)."""
+        try:
+            # Query all_products to get trading parameters
+            data = await self._rest_query("all_products", {})
+            if not data:
+                logger.warning("Could not fetch product params, using defaults")
+                return
+
+            # Find our product in perp_products
+            perp_products = data.get('perp_products', [])
+            for product in perp_products:
+                if product.get('product_id') == self.product_id:
+                    book_info = product.get('book_info', {})
+                    
+                    # price_increment_x18
+                    price_inc_x18 = int(book_info.get('price_increment_x18', '100000000000000000'))
+                    self.price_increment = self._from_x18(price_inc_x18)
+                    
+                    # size_increment (in base units)
+                    size_inc = int(book_info.get('size_increment', '1000000000000000'))
+                    self.size_increment = self._from_x18(size_inc)
+                    
+                    # min_size (notional value)
+                    min_size = int(book_info.get('min_size', '100000000000000000000'))
+                    self.min_size = self._from_x18(min_size)
+                    
+                    logger.info(f"Fetched product {self.product_id} params: price_inc={self.price_increment}, size_inc={self.size_increment}, min_size={self.min_size}")
+                    return
+
+            logger.warning(f"Product {self.product_id} not found in perp_products")
+        except Exception as e:
+            logger.error(f"Failed to fetch product params: {e}")
 
     async def create_auth_token(self) -> Tuple[str, str]:
         """
