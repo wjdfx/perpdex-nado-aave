@@ -26,5 +26,10 @@ eth-account
 # eth-account (已包含)
 # aiohttp (已包含)
 
+# Extended 依赖 (Starknet 签名)
+# 选择一个安装:
+# fast-stark-crypto  # 首选，速度快
+starknet-py  # 备选方案，功能更全
+
 #ccxt
 ccxt

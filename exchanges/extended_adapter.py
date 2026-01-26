@@ -2,19 +2,27 @@
 Extended Exchange Adapter
 
 Extended is a hybrid perpetuals exchange running on Starknet.
-Authentication uses API Key + Stark signatures.
+Authentication uses API Key + Stark signatures for order management.
 
 Mainnet: https://api.starknet.extended.exchange/api/v1
 Testnet: https://api.starknet.sepolia.extended.exchange/api/v1
+
+Learned from Nado implementation:
+- Price/size precision handling with Decimal
+- WebSocket fallback to REST polling
+- Initial price fetching before grid initialization
+- Robust error handling and logging
 """
 
 import asyncio
 import aiohttp
 import logging
+import math
 import os
 import time
 import uuid
-from decimal import Decimal
+from dataclasses import dataclass
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -24,11 +32,53 @@ from .order_converter import normalize_orders_list
 
 logger = logging.getLogger(__name__)
 
+# Try to import Stark crypto library
+try:
+    from starknet_py.hash.utils import pedersen_hash
+    from starknet_py.net.signer.stark_curve_signer import KeyPair
+    STARK_CRYPTO_AVAILABLE = True
+except ImportError:
+    STARK_CRYPTO_AVAILABLE = False
+    logger.warning("starknet_py not available. Stark signing will be disabled.")
+
+# Try fast_stark_crypto (Extended's preferred library)
+try:
+    from fast_stark_crypto import sign as stark_sign, get_order_msg_hash
+    FAST_STARK_AVAILABLE = True
+except ImportError:
+    FAST_STARK_AVAILABLE = False
+    logger.warning("fast_stark_crypto not available. Will try fallback signing.")
+
+
+@dataclass
+class StarknetDomain:
+    """Starknet domain for SNIP12 signing."""
+    name: str
+    version: str
+    chain_id: str
+    revision: str
+
+
+# Starknet domain configurations
+MAINNET_DOMAIN = StarknetDomain(
+    name="Perpetuals",
+    version="v0",
+    chain_id="SN_MAIN",
+    revision="1"
+)
+
+TESTNET_DOMAIN = StarknetDomain(
+    name="Perpetuals",
+    version="v0",
+    chain_id="SN_SEPOLIA",
+    revision="1"
+)
+
 
 class ExtendedAdapter(ExchangeInterface):
     """
     Extended exchange adapter implementing the ExchangeInterface.
-    Uses API Key for authentication with optional Stark signatures for orders.
+    Uses API Key + Stark signatures for authentication.
     """
 
     # Market name to symbol mapping
@@ -59,19 +109,22 @@ class ExtendedAdapter(ExchangeInterface):
             symbol: Market symbol (e.g., "ETH-USD")
         """
         self.market_id = market_id
-        self.symbol = symbol or self.MARKET_ID_TO_SYMBOL.get(market_id, "ETH-USD")
+        self.symbol = symbol or os.getenv("EXTENDED_SYMBOL") or self.MARKET_ID_TO_SYMBOL.get(market_id, "ETH-USD")
         
-        # Load API key from environment
+        # Load credentials from environment
         self.api_key = os.getenv("EXTENDED_API_KEY", "")
+        self.stark_private_key = os.getenv("EXTENDED_STARK_PRIVATE_KEY", "")
         self.env = os.getenv("EXTENDED_ENV", "mainnet").lower()
         
         # Set API endpoints based on environment
         if self.env == "mainnet":
             self.base_url = "https://api.starknet.extended.exchange/api/v1"
             self.ws_url = "wss://api.starknet.extended.exchange/stream.extended.exchange/v1"
+            self.starknet_domain = MAINNET_DOMAIN
         else:
             self.base_url = "https://api.starknet.sepolia.extended.exchange/api/v1"
-            self.ws_url = "wss://starknet.sepolia.extended.exchange/stream.extended.exchange/v1"
+            self.ws_url = "wss://api.starknet.sepolia.extended.exchange/stream.extended.exchange/v1"
+            self.starknet_domain = TESTNET_DOMAIN
         
         # HTTP session
         self.session: Optional[aiohttp.ClientSession] = None
@@ -85,15 +138,32 @@ class ExtendedAdapter(ExchangeInterface):
         self.callbacks: Dict[str, Callable] = {}
         
         # Trading parameters (fetched during initialization)
-        self.min_order_size: float = 0.001
-        self.min_price_change: float = 0.01
-        self.min_size_change: float = 0.001
+        # Use Decimal for precision (learned from Nado)
+        self.min_order_size: Decimal = Decimal("0.001")
+        self.min_price_change: Decimal = Decimal("0.01")
+        self.min_size_change: Decimal = Decimal("0.001")
         self.max_leverage: int = 50
+        self.collateral_decimals: int = 6
+        
+        # L2 config for signing
+        self.synthetic_id: Optional[str] = None
+        self.collateral_id: Optional[str] = None
+        self.synthetic_resolution: int = 1
+        self.collateral_resolution: int = 1000000  # 6 decimals for USDC
         
         # Account info
         self.account_id: Optional[int] = None
-        self.l2_key: Optional[str] = None
-        self.l2_vault: Optional[int] = None
+        self.l2_key: Optional[str] = None  # Stark public key
+        self.l2_vault: Optional[int] = None  # Position ID
+        self.stark_private_key_int: Optional[int] = None
+        self.stark_public_key_int: Optional[int] = None
+        
+        # Parse Stark private key if provided
+        if self.stark_private_key:
+            try:
+                self.stark_private_key_int = int(self.stark_private_key, 16) if self.stark_private_key.startswith("0x") else int(self.stark_private_key, 16)
+            except ValueError:
+                logger.warning("Invalid Stark private key format")
         
         logger.info(f"Extended Adapter initialized: env={self.env}, symbol={self.symbol}")
 
@@ -126,9 +196,13 @@ class ExtendedAdapter(ExchangeInterface):
                 
                 if response.status == 200 and result.get("status") == "OK":
                     return result.get("data")
+                elif response.status == 404:
+                    # Not found is sometimes expected (e.g., no balance)
+                    logger.debug(f"Extended API 404: {endpoint}")
+                    return None
                 else:
                     error = result.get("error", {})
-                    logger.error(f"Extended API error: {error}")
+                    logger.error(f"Extended API error ({response.status}): {error}, url={url}")
                     return None
         except Exception as e:
             logger.error(f"Extended request error: {e}", exc_info=True)
@@ -146,22 +220,81 @@ class ExtendedAdapter(ExchangeInterface):
         """DELETE request."""
         return await self._request("DELETE", endpoint, params=params)
 
-    def _round_price(self, price: float) -> str:
-        """Round price to valid increment and return as string."""
+    def _round_price(self, price: float) -> Decimal:
+        """Round price to valid increment using Decimal for precision."""
+        price_decimal = Decimal(str(price))
         if self.min_price_change > 0:
-            rounded = round(price / self.min_price_change) * self.min_price_change
-            # Format to appropriate decimal places
-            decimals = len(str(self.min_price_change).split('.')[-1]) if '.' in str(self.min_price_change) else 0
-            return f"{rounded:.{decimals}f}"
-        return str(price)
+            # Round to nearest increment
+            return (price_decimal / self.min_price_change).quantize(Decimal('1'), rounding=ROUND_DOWN) * self.min_price_change
+        return price_decimal
 
-    def _round_size(self, size: float) -> str:
-        """Round size to valid increment and return as string."""
+    def _round_size(self, size: float) -> Decimal:
+        """Round size to valid increment using Decimal for precision."""
+        size_decimal = Decimal(str(size))
         if self.min_size_change > 0:
-            rounded = round(size / self.min_size_change) * self.min_size_change
-            decimals = len(str(self.min_size_change).split('.')[-1]) if '.' in str(self.min_size_change) else 0
-            return f"{rounded:.{decimals}f}"
-        return str(size)
+            return (size_decimal / self.min_size_change).quantize(Decimal('1'), rounding=ROUND_DOWN) * self.min_size_change
+        return size_decimal
+
+    def _to_stark_amount(self, human_amount: Decimal, resolution: int) -> int:
+        """Convert human-readable amount to Stark (quantum) amount."""
+        return int(human_amount * Decimal(resolution))
+
+    def _from_stark_amount(self, stark_amount: int, resolution: int) -> Decimal:
+        """Convert Stark (quantum) amount to human-readable amount."""
+        return Decimal(stark_amount) / Decimal(resolution)
+
+    def _sign_message(self, msg_hash: int) -> Tuple[int, int]:
+        """Sign a message hash with Stark private key."""
+        if not self.stark_private_key_int:
+            raise ValueError("Stark private key not configured")
+        
+        if FAST_STARK_AVAILABLE:
+            return stark_sign(private_key=self.stark_private_key_int, msg_hash=msg_hash)
+        elif STARK_CRYPTO_AVAILABLE:
+            # Fallback to starknet_py
+            key_pair = KeyPair.from_private_key(self.stark_private_key_int)
+            signature = key_pair.sign(msg_hash)
+            return (signature[0], signature[1])
+        else:
+            raise ImportError("No Stark crypto library available. Install fast_stark_crypto or starknet_py.")
+
+    def _calculate_order_hash(
+        self,
+        synthetic_amount: int,
+        collateral_amount: int,
+        fee_amount: int,
+        nonce: int,
+        expiration_seconds: int,
+    ) -> int:
+        """Calculate order hash for signing."""
+        if FAST_STARK_AVAILABLE:
+            return get_order_msg_hash(
+                position_id=self.l2_vault,
+                base_asset_id=int(self.synthetic_id, 16) if self.synthetic_id else 0,
+                base_amount=synthetic_amount,
+                quote_asset_id=int(self.collateral_id, 16) if self.collateral_id else 0,
+                quote_amount=collateral_amount,
+                fee_amount=fee_amount,
+                fee_asset_id=int(self.collateral_id, 16) if self.collateral_id else 0,
+                expiration=expiration_seconds,
+                salt=nonce,
+                user_public_key=self.stark_public_key_int,
+                domain_name=self.starknet_domain.name,
+                domain_version=self.starknet_domain.version,
+                domain_chain_id=self.starknet_domain.chain_id,
+                domain_revision=self.starknet_domain.revision,
+            )
+        else:
+            # Simplified hash for testing (not for production)
+            logger.warning("Using simplified order hash - not for production use")
+            return hash((synthetic_amount, collateral_amount, fee_amount, nonce, expiration_seconds))
+
+    def _generate_nonce(self) -> int:
+        """Generate a unique nonce for orders."""
+        # Use timestamp + random bits like Nado
+        timestamp_bits = int(time.time() * 1000) & ((1 << 40) - 1)
+        random_bits = int.from_bytes(os.urandom(4), 'big') & ((1 << 20) - 1)
+        return (timestamp_bits << 20) | random_bits
 
     async def initialize_client(self) -> None:
         """Initialize the exchange client."""
@@ -172,21 +305,38 @@ class ExtendedAdapter(ExchangeInterface):
                 self.account_id = account_info.get("accountId")
                 self.l2_key = account_info.get("l2Key")
                 self.l2_vault = account_info.get("l2Vault")
-                logger.info(f"Extended account: id={self.account_id}, l2Key={self.l2_key[:20]}...")
+                
+                # Parse public key
+                if self.l2_key:
+                    try:
+                        self.stark_public_key_int = int(self.l2_key, 16)
+                    except ValueError:
+                        pass
+                
+                logger.info(f"Extended account: id={self.account_id}, vault={self.l2_vault}")
 
             # Fetch market info to get trading parameters
             markets = await self._get("/info/markets", params={"market": self.symbol})
             if markets and len(markets) > 0:
                 market = markets[0]
                 trading_config = market.get("tradingConfig", {})
+                l2_config = market.get("l2Config", {})
                 
-                self.min_order_size = float(trading_config.get("minOrderSize", "0.001"))
-                self.min_size_change = float(trading_config.get("minOrderSizeChange", "0.001"))
-                self.min_price_change = float(trading_config.get("minPriceChange", "0.01"))
+                # Use Decimal for precision (learned from Nado)
+                self.min_order_size = Decimal(str(trading_config.get("minOrderSize", "0.001")))
+                self.min_size_change = Decimal(str(trading_config.get("minOrderSizeChange", "0.001")))
+                self.min_price_change = Decimal(str(trading_config.get("minPriceChange", "0.01")))
                 self.max_leverage = int(trading_config.get("maxLeverage", "50"))
+                
+                # L2 config for signing
+                self.synthetic_id = l2_config.get("syntheticId")
+                self.collateral_id = l2_config.get("collateralId")
+                self.synthetic_resolution = int(l2_config.get("syntheticResolution", 1))
+                self.collateral_resolution = int(l2_config.get("collateralResolution", 1000000))
                 
                 logger.info(f"Extended market {self.symbol}: min_size={self.min_order_size}, "
                            f"price_change={self.min_price_change}, size_change={self.min_size_change}")
+                logger.info(f"L2 config: synthetic_id={self.synthetic_id}, collateral_id={self.collateral_id}")
             
             logger.info(f"Extended client initialized: env={self.env}")
         except Exception as e:
@@ -196,6 +346,62 @@ class ExtendedAdapter(ExchangeInterface):
         """Return API key as auth token."""
         return self.api_key
 
+    def _build_settlement(
+        self,
+        side: str,
+        price: Decimal,
+        qty: Decimal,
+        fee_rate: Decimal,
+        nonce: int,
+        expiration_ms: int,
+    ) -> Optional[Dict]:
+        """Build settlement data with Stark signature."""
+        if not self.stark_private_key_int or not self.l2_vault:
+            logger.warning("Stark signing not configured, submitting order without settlement")
+            return None
+        
+        try:
+            is_buy = side.upper() == "BUY"
+            
+            # Calculate amounts in Stark (quantum) units
+            synthetic_stark = self._to_stark_amount(qty, self.synthetic_resolution)
+            collateral_value = qty * price
+            collateral_stark = self._to_stark_amount(collateral_value, self.collateral_resolution)
+            fee_stark = self._to_stark_amount(collateral_value * fee_rate, self.collateral_resolution)
+            
+            # Negate amounts based on side (buy = negative collateral, sell = negative synthetic)
+            if is_buy:
+                collateral_stark = -collateral_stark
+            else:
+                synthetic_stark = -synthetic_stark
+            
+            # Calculate expiration in seconds with 14-day buffer
+            expiration_seconds = int((expiration_ms / 1000) + (14 * 24 * 60 * 60))
+            
+            # Calculate order hash
+            order_hash = self._calculate_order_hash(
+                synthetic_amount=synthetic_stark,
+                collateral_amount=collateral_stark,
+                fee_amount=fee_stark,
+                nonce=nonce,
+                expiration_seconds=expiration_seconds,
+            )
+            
+            # Sign the hash
+            r, s = self._sign_message(order_hash)
+            
+            return {
+                "signature": {
+                    "r": hex(r),
+                    "s": hex(s)
+                },
+                "starkKey": self.l2_key,
+                "collateralPosition": str(self.l2_vault)
+            }
+        except Exception as e:
+            logger.error(f"Failed to build settlement: {e}", exc_info=True)
+            return None
+
     async def place_single_order(
         self,
         is_ask: bool,
@@ -203,57 +409,68 @@ class ExtendedAdapter(ExchangeInterface):
         amount: float
     ) -> Tuple[bool, str]:
         """
-        Place a single limit order.
-        
-        Note: Extended requires Stark signatures for orders.
-        For now, this is a simplified implementation without full Stark signing.
-        Full implementation would require the Stark private key and signing logic.
+        Place a single limit order with POST_ONLY.
         """
         try:
             side = "SELL" if is_ask else "BUY"
-            price_str = self._round_price(price)
-            qty_str = self._round_size(amount)
             
-            # Generate order ID
+            # Round price and amount using Decimal (learned from Nado)
+            price_decimal = self._round_price(price)
+            qty_decimal = self._round_size(amount)
+            
+            logger.debug(f"Placing order: {side} {qty_decimal} @ {price_decimal}")
+            
+            # Generate order ID and nonce
             order_id = str(uuid.uuid4())
+            nonce = self._generate_nonce()
             
-            # Calculate expiration (90 days max for mainnet)
-            expiration = int(time.time() * 1000) + (86400 * 30 * 1000)  # 30 days
+            # Calculate expiration (30 days for mainnet, max 90 days)
+            expiration_ms = int(time.time() * 1000) + (30 * 24 * 60 * 60 * 1000)
             
             # Get fees
             fees_data = await self._get("/user/fees", params={"market": self.symbol})
-            maker_fee = "0.0000"
+            maker_fee = Decimal("0.0000")  # Extended has 0% maker fee
             if fees_data and len(fees_data) > 0:
-                maker_fee = fees_data[0].get("makerFeeRate", "0.0000")
+                maker_fee = Decimal(str(fees_data[0].get("makerFeeRate", "0.0000")))
+            
+            # Build settlement (Stark signature)
+            settlement = self._build_settlement(
+                side=side,
+                price=price_decimal,
+                qty=qty_decimal,
+                fee_rate=maker_fee,
+                nonce=nonce,
+                expiration_ms=expiration_ms,
+            )
             
             # Build order request
-            # Note: Full implementation would include Stark signature
             order_data = {
                 "id": order_id,
                 "market": self.symbol,
                 "type": "LIMIT",
                 "side": side,
-                "qty": qty_str,
-                "price": price_str,
+                "qty": str(qty_decimal),
+                "price": str(price_decimal),
                 "timeInForce": "GTT",
-                "expiryEpochMillis": expiration,
-                "fee": maker_fee,
+                "expiryEpochMillis": expiration_ms,
+                "fee": str(maker_fee),
+                "nonce": str(nonce),
                 "postOnly": True,
                 "reduceOnly": False,
                 "selfTradeProtectionLevel": "ACCOUNT",
-                # settlement field would contain Stark signature
             }
             
-            logger.debug(f"Placing Extended order: {side} {qty_str} @ {price_str}")
+            if settlement:
+                order_data["settlement"] = settlement
             
             result = await self._post("/user/order", data=order_data)
             
             if result:
                 order_id = str(result.get("id", order_id))
-                logger.info(f"Extended order placed: id={order_id}")
+                logger.info(f"Extended order placed: id={order_id}, {side} {qty_decimal} @ {price_decimal}")
                 return True, order_id
             else:
-                logger.error("Failed to place Extended order")
+                logger.error(f"Failed to place Extended order: {side} {qty_decimal} @ {price_decimal}")
                 return False, ""
                 
         except Exception as e:
@@ -264,7 +481,7 @@ class ExtendedAdapter(ExchangeInterface):
         self,
         orders: List[Tuple[bool, float, float]]
     ) -> Tuple[bool, List[str]]:
-        """Place multiple orders."""
+        """Place multiple orders with rollback on failure (learned from Nado)."""
         order_ids = []
         all_success = True
         
@@ -274,9 +491,10 @@ class ExtendedAdapter(ExchangeInterface):
                 order_ids.append(order_id)
             else:
                 all_success = False
-                logger.error(f"Failed to place order {i+1}/{len(orders)}")
-                # Rollback: cancel previously placed orders
+                logger.error(f"place_multi_orders: Failed to place order {i+1}/{len(orders)}")
+                # Rollback: cancel previously placed orders (learned from Nado)
                 if order_ids:
+                    logger.info(f"Rolling back {len(order_ids)} previously placed orders")
                     await self._cancel_orders_by_ids(order_ids)
                     order_ids = []
                 break
@@ -292,37 +510,51 @@ class ExtendedAdapter(ExchangeInterface):
         """Place a market order (using IOC limit order)."""
         try:
             side = "SELL" if is_ask else "BUY"
-            qty_str = self._round_size(amount)
+            qty_decimal = self._round_size(amount)
             
-            # For market orders, use aggressive price
+            # For market orders, use aggressive price (0.75% slippage like Extended UI)
             if is_ask:
-                market_price = price * 0.9925  # 0.75% below
+                market_price = self._round_price(price * 0.9925)
             else:
-                market_price = price * 1.0075  # 0.75% above
+                market_price = self._round_price(price * 1.0075)
             
-            price_str = self._round_price(market_price)
             order_id = str(uuid.uuid4())
-            expiration = int(time.time() * 1000) + (60 * 1000)  # 1 minute
+            nonce = self._generate_nonce()
+            expiration_ms = int(time.time() * 1000) + (60 * 1000)  # 1 minute
             
             # Get taker fee
             fees_data = await self._get("/user/fees", params={"market": self.symbol})
-            taker_fee = "0.00025"
+            taker_fee = Decimal("0.00025")  # Default taker fee
             if fees_data and len(fees_data) > 0:
-                taker_fee = fees_data[0].get("takerFeeRate", "0.00025")
+                taker_fee = Decimal(str(fees_data[0].get("takerFeeRate", "0.00025")))
+            
+            # Build settlement
+            settlement = self._build_settlement(
+                side=side,
+                price=market_price,
+                qty=qty_decimal,
+                fee_rate=taker_fee,
+                nonce=nonce,
+                expiration_ms=expiration_ms,
+            )
             
             order_data = {
                 "id": order_id,
                 "market": self.symbol,
                 "type": "LIMIT",
                 "side": side,
-                "qty": qty_str,
-                "price": price_str,
-                "timeInForce": "IOC",
-                "expiryEpochMillis": expiration,
-                "fee": taker_fee,
+                "qty": str(qty_decimal),
+                "price": str(market_price),
+                "timeInForce": "IOC",  # Immediate or Cancel for market orders
+                "expiryEpochMillis": expiration_ms,
+                "fee": str(taker_fee),
+                "nonce": str(nonce),
                 "postOnly": False,
                 "reduceOnly": False,
             }
+            
+            if settlement:
+                order_data["settlement"] = settlement
             
             result = await self._post("/user/order", data=order_data)
             
@@ -354,20 +586,22 @@ class ExtendedAdapter(ExchangeInterface):
     async def _cancel_orders_by_ids(self, order_ids: List[str]) -> bool:
         """Cancel orders by IDs."""
         try:
-            # Convert to int IDs if needed
             int_ids = []
+            ext_ids = []
             for oid in order_ids:
                 try:
                     int_ids.append(int(oid))
                 except ValueError:
-                    pass
+                    ext_ids.append(oid)
             
+            result = True
             if int_ids:
-                result = await self._post("/user/order/massCancel", data={
-                    "orderIds": int_ids
-                })
-                return result is not None
-            return True
+                r = await self._post("/user/order/massCancel", data={"orderIds": int_ids})
+                result = result and (r is not None)
+            if ext_ids:
+                r = await self._post("/user/order/massCancel", data={"externalOrderIds": ext_ids})
+                result = result and (r is not None)
+            return result
         except Exception as e:
             logger.error(f"Extended _cancel_orders_by_ids error: {e}")
             return False
@@ -378,10 +612,8 @@ class ExtendedAdapter(ExchangeInterface):
         price: float = None,
         amount: float = None
     ) -> Tuple[bool, str]:
-        """Modify an existing order (uses cancel + replace)."""
-        # Extended supports order editing via cancelId parameter
+        """Modify an existing order (Extended supports cancelId for replace)."""
         try:
-            # Get current order
             orders = await self.get_orders()
             current_order = None
             for order in orders:
@@ -395,9 +627,8 @@ class ExtendedAdapter(ExchangeInterface):
             
             is_ask = current_order.get('side', '').upper() == 'SELL'
             new_price = price if price else float(current_order.get('price', 0))
-            new_amount = amount if amount else float(current_order.get('amount', 0))
+            new_amount = amount if amount else float(current_order.get('qty', 0))
             
-            # Place new order with cancelId to replace
             return await self.place_single_order(is_ask, new_price, new_amount)
             
         except Exception as e:
@@ -409,7 +640,9 @@ class ExtendedAdapter(ExchangeInterface):
         try:
             orders = await self._get("/user/orders", params={"market": self.symbol})
             if orders:
-                logger.debug(f"Extended: Got {len(orders)} open orders")
+                # Log sample for debugging (learned from Nado)
+                if len(orders) > 0:
+                    logger.debug(f"Extended raw order sample: {orders[0]}")
                 return orders
             return []
         except Exception as e:
@@ -440,15 +673,15 @@ class ExtendedAdapter(ExchangeInterface):
             for pos in positions:
                 market = pos.get("market", self.symbol)
                 side = pos.get("side", "LONG")
-                size = float(pos.get("size", "0"))
+                size = Decimal(str(pos.get("size", "0")))
                 
                 # Make size negative for short positions
                 if side == "SHORT":
                     size = -size
                 
                 result[market] = {
-                    "position": size,
-                    "size": abs(size),
+                    "position": float(size),
+                    "size": float(abs(size)),
                     "side": side,
                     "entryPrice": float(pos.get("openPrice", "0")),
                     "markPrice": float(pos.get("markPrice", "0")),
@@ -457,6 +690,7 @@ class ExtendedAdapter(ExchangeInterface):
                     "leverage": float(pos.get("leverage", "1")),
                     "liquidationPrice": float(pos.get("liquidationPrice", "0")),
                     "margin": float(pos.get("margin", "0")),
+                    "sign": 1 if side == "LONG" else -1,
                     "info": pos
                 }
             
@@ -557,22 +791,27 @@ class ExtendedAdapter(ExchangeInterface):
         callbacks: Dict[str, Callable[[str, Any], None]],
         proxy: str = None
     ) -> None:
-        """Subscribe to WebSocket streams."""
+        """Subscribe to WebSocket streams with REST fallback (learned from Nado)."""
         self.callbacks = callbacks
         
-        # First, poll initial data
+        # First, fetch initial market price (learned from Nado)
         if 'market_stats' in callbacks:
-            await self._poll_market_stats()
+            logger.info("Fetching initial market price...")
+            initial_price = await self._poll_market_stats()
+            if initial_price:
+                logger.info(f"Initial market price: {initial_price}")
+            else:
+                logger.warning("Could not fetch initial market price")
         
-        # Initialize WebSocket
+        # Try to initialize WebSocket
         if not self.ws_initialized:
             await self._initialize_ws()
         
-        # Start polling task as backup
+        # Always start REST polling as backup (learned from Nado)
         asyncio.create_task(self._rest_polling_task())
 
     async def _initialize_ws(self):
-        """Initialize WebSocket connections."""
+        """Initialize WebSocket connections with error handling (learned from Nado)."""
         try:
             if self.ws_session is None or self.ws_session.closed:
                 self.ws_session = aiohttp.ClientSession(headers={
@@ -590,8 +829,15 @@ class ExtendedAdapter(ExchangeInterface):
             # Start listener
             asyncio.create_task(self._ws_listener())
             
-            logger.info("Extended WebSocket initialized")
+            logger.info("Extended WebSocket initialized successfully")
             
+        except aiohttp.ClientResponseError as e:
+            logger.error(f"Extended WebSocket connection failed (HTTP {e.status}): {e.message}")
+            logger.warning("WebSocket unavailable - will use REST API polling for updates")
+            self.ws_initialized = False
+        except aiohttp.WSServerHandshakeError as e:
+            logger.error(f"Extended WebSocket handshake failed: {e}")
+            self.ws_initialized = False
         except Exception as e:
             logger.error(f"Extended WebSocket init error: {e}")
             self.ws_initialized = False
@@ -615,7 +861,6 @@ class ExtendedAdapter(ExchangeInterface):
             msg_type = data.get("type", "")
             
             if msg_type in ["SNAPSHOT", "DELTA"]:
-                # Orderbook data
                 orderbook = data.get("data", {})
                 bids = orderbook.get("b", [])
                 asks = orderbook.get("a", [])
@@ -641,12 +886,14 @@ class ExtendedAdapter(ExchangeInterface):
             logger.error(f"Extended _handle_ws_message error: {e}")
 
     async def _rest_polling_task(self):
-        """Poll REST API for updates."""
+        """Poll REST API for updates (backup for WebSocket, learned from Nado)."""
         poll_count = 0
         while True:
             try:
+                # Poll market price every cycle
                 await self._poll_market_stats()
                 
+                # Poll orders and positions every 2 cycles (6 seconds)
                 poll_count += 1
                 if poll_count % 2 == 0:
                     await self._poll_orders()
@@ -657,8 +904,8 @@ class ExtendedAdapter(ExchangeInterface):
                 logger.error(f"Extended REST polling error: {e}")
                 await asyncio.sleep(5)
 
-    async def _poll_market_stats(self):
-        """Poll market statistics."""
+    async def _poll_market_stats(self) -> Optional[float]:
+        """Poll market statistics and trigger callback."""
         try:
             stats = await self._get(f"/info/markets/{self.symbol}/stats")
             
@@ -675,6 +922,8 @@ class ExtendedAdapter(ExchangeInterface):
                     'index_price': float(stats.get("indexPrice", "0")),
                 }
                 
+                logger.debug(f"Market price polled: mark_price={mark_price}")
+                
                 callback = self.callbacks['market_stats']
                 if asyncio.iscoroutinefunction(callback):
                     asyncio.create_task(callback(self.symbol, market_stats))
@@ -687,15 +936,16 @@ class ExtendedAdapter(ExchangeInterface):
         return None
 
     async def _poll_orders(self):
-        """Poll orders and trigger callback."""
+        """Poll orders and trigger callback (learned from Nado)."""
         try:
-            if 'orders' not in self.callbacks:
+            if 'orders' not in self.callbacks or not self.callbacks['orders']:
                 return
             
             orders = await self.get_orders()
             if orders:
                 # Normalize to CCXT format
                 normalized = normalize_orders_list(orders)
+                logger.debug(f"Polled {len(orders)} orders, normalized {len(normalized)}")
                 
                 callback = self.callbacks['orders']
                 if asyncio.iscoroutinefunction(callback):
@@ -706,9 +956,9 @@ class ExtendedAdapter(ExchangeInterface):
             logger.error(f"Extended _poll_orders error: {e}")
 
     async def _poll_positions(self):
-        """Poll positions and trigger callback."""
+        """Poll positions and trigger callback (learned from Nado)."""
         try:
-            if 'positions' not in self.callbacks:
+            if 'positions' not in self.callbacks or not self.callbacks['positions']:
                 return
             
             positions = await self.get_positions()
