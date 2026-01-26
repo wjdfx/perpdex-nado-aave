@@ -893,9 +893,10 @@ class ExtendedAdapter(ExchangeInterface):
                 # Poll market price every cycle
                 await self._poll_market_stats()
                 
-                # Poll orders and positions every 2 cycles (6 seconds)
+                # Only poll orders and positions if WebSocket is NOT connected
+                # This avoids duplicate callbacks when WebSocket is working
                 poll_count += 1
-                if poll_count % 2 == 0:
+                if poll_count % 2 == 0 and not self.ws_initialized:
                     await self._poll_orders()
                     await self._poll_positions()
                 
