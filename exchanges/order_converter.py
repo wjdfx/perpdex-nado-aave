@@ -75,14 +75,16 @@ def is_standx_order(order: Dict[str, Any]) -> bool:
 
 def is_nado_order(order: Dict[str, Any]) -> bool:
     """Check if order is in Nado format."""
-    # Nado orders have product_id, sender, price_x18, amount, expiration, nonce, digest fields
+    # Nado orders have product_id, sender, price (priceX18/price_x18), amount, expiration, nonce, digest fields
+    # Handle both camelCase and snake_case variations
+    has_price = 'price_x18' in order or 'priceX18' in order or 'price' in order
+    has_sender = 'sender' in order or 'subaccount' in order
     return (
         'product_id' in order and
-        'sender' in order and
-        'price_x18' in order and
+        has_sender and
+        has_price and
         'amount' in order and
-        'expiration' in order and
-        'nonce' in order
+        ('expiration' in order or 'digest' in order)
     )
 
 
@@ -356,9 +358,12 @@ def convert_nado_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
         X18 = 10 ** 18
         
         # Parse price and amount from x18 format
-        price_x18 = int(order.get('price_x18', '0'))
+        # Handle both camelCase (priceX18) and snake_case (price_x18) variations
+        price_x18 = int(order.get('price_x18') or order.get('priceX18') or order.get('price') or '0')
         amount_raw = int(order.get('amount', '0'))
-        unfilled_amount_raw = int(order.get('unfilled_amount', amount_raw))
+        unfilled_amount_raw = int(order.get('unfilled_amount') or order.get('unfilledAmount') or amount_raw)
+        
+        logger.debug(f"Parsing Nado order: price_x18={price_x18}, amount={amount_raw}, unfilled={unfilled_amount_raw}")
         
         price = price_x18 / X18
         amount = abs(amount_raw) / X18
@@ -401,9 +406,14 @@ def convert_nado_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
         }
         symbol = product_symbol_map.get(product_id, f'PRODUCT_{product_id}')
         
+        # Get order ID (digest is the primary identifier in Nado)
+        order_id = order.get('digest', '')
+        if not order_id:
+            order_id = str(order.get('nonce', ''))
+        
         # Build CCXT order
         ccxt_order = {
-            'id': order.get('digest', str(order.get('nonce', ''))),
+            'id': order_id,
             'clientOrderId': str(int(order.get('nonce', 0)) & ((1 << 20) - 1)) if order.get('nonce') else '',
             'datetime': datetime_str,
             'timestamp': timestamp_ms,

@@ -644,6 +644,11 @@ class NadoAdapter(ExchangeInterface):
             }
             data = await self._rest_query("subaccount_orders", params)
             orders = data.get('orders', [])
+            
+            # Log raw order format for debugging (only first order)
+            if orders and len(orders) > 0:
+                logger.debug(f"Raw Nado order sample: {orders[0]}")
+            
             return orders
         except Exception as e:
             logger.error(f"get_orders error: {e}", exc_info=True)
@@ -836,11 +841,15 @@ class NadoAdapter(ExchangeInterface):
             
             orders = await self.get_orders()
             if orders:
+                # Normalize orders to CCXT format
+                normalized_orders = normalize_orders_list(orders)
+                logger.debug(f"Polled {len(orders)} orders, normalized {len(normalized_orders)}")
+                
                 callback = self.callbacks['orders']
                 if asyncio.iscoroutinefunction(callback):
-                    asyncio.create_task(callback(self.address, orders))
+                    asyncio.create_task(callback(self.address, normalized_orders))
                 else:
-                    callback(self.address, orders)
+                    callback(self.address, normalized_orders)
         except Exception as e:
             logger.error(f"Poll orders error: {e}")
 
