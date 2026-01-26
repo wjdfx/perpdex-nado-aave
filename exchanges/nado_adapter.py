@@ -75,19 +75,21 @@ class NadoAdapter(ExchangeInterface):
         self.env = os.getenv('NADO_ENV', 'testnet').lower()
 
         # Set endpoints based on environment
-        # Note: As of Jan 2026, Nado mainnet may not be fully available
-        # Default to testnet for safety
+        # Mainnet: Ink chain, Testnet: Ink Sepolia
         if self.env == 'mainnet':
-            # Mainnet endpoints (may not be available yet)
-            self.gateway_rest = os.getenv('NADO_GATEWAY_REST', 'https://gateway.nado.xyz/v1')
-            self.gateway_ws = os.getenv('NADO_GATEWAY_WS', 'wss://gateway.nado.xyz/v1/ws')
-            self.subscriptions_ws = os.getenv('NADO_SUBSCRIPTIONS_WS', 'wss://gateway.nado.xyz/v1/subscribe')
-            logger.warning("Using Nado mainnet - if connection fails, try NADO_ENV='testnet'")
+            # Mainnet endpoints (Ink)
+            self.gateway_rest = os.getenv('NADO_GATEWAY_REST', 'https://gateway.prod.nado.xyz/v1')
+            self.gateway_ws = os.getenv('NADO_GATEWAY_WS', 'wss://gateway.prod.nado.xyz/v1/ws')
+            self.subscriptions_ws = os.getenv('NADO_SUBSCRIPTIONS_WS', 'wss://gateway.prod.nado.xyz/v1/subscribe')
+            self.archive_url = os.getenv('NADO_ARCHIVE_URL', 'https://archive.prod.nado.xyz/v1')
+            self.trigger_url = os.getenv('NADO_TRIGGER_URL', 'https://trigger.prod.nado.xyz/v1')
         else:
-            # Testnet endpoints (recommended for testing)
+            # Testnet endpoints (Ink Sepolia)
             self.gateway_rest = os.getenv('NADO_GATEWAY_REST', 'https://gateway.test.nado.xyz/v1')
             self.gateway_ws = os.getenv('NADO_GATEWAY_WS', 'wss://gateway.test.nado.xyz/v1/ws')
             self.subscriptions_ws = os.getenv('NADO_SUBSCRIPTIONS_WS', 'wss://gateway.test.nado.xyz/v1/subscribe')
+            self.archive_url = os.getenv('NADO_ARCHIVE_URL', 'https://archive.test.nado.xyz/v1')
+            self.trigger_url = os.getenv('NADO_TRIGGER_URL', 'https://trigger.test.nado.xyz/v1')
 
         # Initialize account from private key
         if self.private_key:
@@ -960,29 +962,33 @@ class NadoAdapter(ExchangeInterface):
     async def initialize_client(self) -> None:
         """Initialize the exchange client."""
         try:
-            # Fetch contract information
+            # Fetch contract information from API
             contracts = await self._fetch_contracts()
             self.chain_id = contracts.get('chain_id')
             self.endpoint_address = contracts.get('endpoint')
 
             if not self.chain_id or not self.endpoint_address:
-                logger.warning("Could not fetch contract info from API, using defaults for testnet")
-                # Default values for testnet (Arbitrum Sepolia)
-                if self.env == 'testnet':
-                    self.chain_id = 421614  # Arbitrum Sepolia
-                    self.endpoint_address = "0xbBfF621b442B8F53Daa9541f5Bcf5B752C5F0421"  # Testnet endpoint
+                logger.warning("Could not fetch contract info from API, using hardcoded defaults")
+                # Use hardcoded values based on environment
+                if self.env == 'mainnet':
+                    # Mainnet: Ink chain
+                    self.chain_id = 57073  # Ink mainnet chain_id
+                    self.endpoint_address = "0x05ec92D78ED421f3D3Ada77FFdE167106565974E"
                 else:
-                    # Mainnet defaults (Arbitrum One)
-                    self.chain_id = 42161  # Arbitrum One
-                    self.endpoint_address = "0x0000000000000000000000000000000000000000"
-                    logger.warning("Mainnet contract address not configured - orders may fail")
+                    # Testnet: Ink Sepolia
+                    self.chain_id = 763373  # Ink Sepolia chain_id
+                    self.endpoint_address = "0x698D87105274292B5673367DEC81874Ce3633Ac2"
 
             logger.info(f"Nado client initialized: env={self.env}, chain_id={self.chain_id}, endpoint={self.endpoint_address}")
         except Exception as e:
             logger.error(f"Failed to initialize client: {e}", exc_info=True)
-            # Set fallback values
-            self.chain_id = 421614
-            self.endpoint_address = "0xbBfF621b442B8F53Daa9541f5Bcf5B752C5F0421"
+            # Set fallback values based on environment
+            if self.env == 'mainnet':
+                self.chain_id = 57073
+                self.endpoint_address = "0x05ec92D78ED421f3D3Ada77FFdE167106565974E"
+            else:
+                self.chain_id = 763373
+                self.endpoint_address = "0x698D87105274292B5673367DEC81874Ce3633Ac2"
 
     async def create_auth_token(self) -> Tuple[str, str]:
         """
