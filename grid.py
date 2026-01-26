@@ -16,6 +16,7 @@ class ExchangeType(Enum):
     GRVT = "grvt"
     STANDX = "standx"
     NADO = "nado"
+    EXTENDED = "extended"
 
 
 def load_grid_configs() -> Dict[str, Dict[str, Any]]:
@@ -41,7 +42,8 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "lighter": common_config.copy(),
         "grvt": common_config.copy(),
         "standx": common_config.copy(),
-        "nado": common_config.copy()
+        "nado": common_config.copy(),
+        "extended": common_config.copy()
     }
 
 

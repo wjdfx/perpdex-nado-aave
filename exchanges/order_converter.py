@@ -22,7 +22,7 @@ def normalize_order_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         CCXT standardized order dictionary
     """
-    # Determine if this is a Lighter, GRVT, StandX, or Nado order based on field structure
+    # Determine if this is a Lighter, GRVT, StandX, Nado, or Extended order based on field structure
     if is_lighter_order(order):
         return convert_lighter_to_ccxt(order)
     elif is_grvt_order(order):
@@ -31,6 +31,8 @@ def normalize_order_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
         return convert_standx_to_ccxt(order)
     elif is_nado_order(order):
         return convert_nado_to_ccxt(order)
+    elif is_extended_order(order):
+        return convert_extended_to_ccxt(order)
     else:
         logger.warning(f"Unknown order format: {order}")
         return convert_unknown_to_ccxt(order)
@@ -85,6 +87,22 @@ def is_nado_order(order: Dict[str, Any]) -> bool:
         has_price and
         'amount' in order and
         ('expiration' in order or 'digest' in order)
+    )
+
+
+def is_extended_order(order: Dict[str, Any]) -> bool:
+    """Check if order is in Extended format."""
+    # Extended orders have id, market, type, side, status, qty fields
+    # and market is in format "XXX-USD" (e.g., "ETH-USD")
+    return (
+        'id' in order and
+        'market' in order and
+        'type' in order and
+        'side' in order and
+        'status' in order and
+        'qty' in order and
+        isinstance(order.get('market', ''), str) and
+        '-USD' in order.get('market', '')
     )
 
 
@@ -446,6 +464,102 @@ def convert_nado_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
             'status': 'unknown',
             'symbol': 'ETH-PERP',
             'side': 'buy',
+            'price': 0,
+            'amount': 0,
+            'filled': 0,
+            'remaining': 0,
+            'cost': 0,
+            'info': order,
+            'error': str(e)
+        }
+
+
+def convert_extended_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert Extended order format to CCXT format."""
+    try:
+        # Map status
+        status_mapping = {
+            'NEW': 'open',
+            'PARTIALLY_FILLED': 'open',
+            'FILLED': 'closed',
+            'CANCELLED': 'canceled',
+            'CANCELED': 'canceled',
+            'REJECTED': 'rejected',
+            'EXPIRED': 'expired',
+            'UNTRIGGERED': 'open',
+            'TRIGGERED': 'open',
+        }
+        
+        # Get order data
+        order_id = str(order.get('id', ''))
+        external_id = str(order.get('externalId', ''))
+        market = order.get('market', 'ETH-USD')
+        side = order.get('side', 'BUY').lower()
+        status = status_mapping.get(order.get('status', 'NEW'), 'open')
+        
+        # Parse amounts
+        price = float(order.get('price', '0') or '0')
+        qty = float(order.get('qty', '0') or '0')
+        filled_qty = float(order.get('filledQty', '0') or '0')
+        remaining = qty - filled_qty
+        average_price = float(order.get('averagePrice', '0') or '0') or price
+        
+        # Get timestamps
+        created_time = order.get('createdTime')
+        updated_time = order.get('updatedTime')
+        
+        # Map order type
+        order_type = order.get('type', 'LIMIT').lower()
+        if order_type in ['limit', 'conditional']:
+            ccxt_type = 'limit'
+        elif order_type == 'market':
+            ccxt_type = 'market'
+        else:
+            ccxt_type = 'limit'
+        
+        # Time in force
+        time_in_force = order.get('timeInForce', 'GTT')
+        if time_in_force == 'IOC':
+            tif = 'IOC'
+        elif time_in_force == 'GTT':
+            tif = 'GTC'
+        else:
+            tif = 'GTC'
+        
+        ccxt_order = {
+            'id': order_id,
+            'clientOrderId': external_id,
+            'datetime': datetime.fromtimestamp(created_time / 1000).isoformat() if created_time else None,
+            'timestamp': created_time,
+            'lastTradeTimestamp': updated_time,
+            'status': status,
+            'symbol': market,
+            'type': ccxt_type,
+            'timeInForce': tif,
+            'side': side,
+            'price': price,
+            'average': average_price,
+            'amount': qty,
+            'filled': filled_qty,
+            'remaining': remaining,
+            'cost': filled_qty * average_price,
+            'trades': [],
+            'fee': {'cost': float(order.get('payedFee', '0') or '0')},
+            'reduceOnly': order.get('reduceOnly', False),
+            'postOnly': order.get('postOnly', False),
+            'info': order
+        }
+        
+        return ccxt_order
+        
+    except Exception as e:
+        logger.error(f"Error converting Extended order to CCXT: {e}", exc_info=True)
+        return {
+            'id': str(order.get('id', '')),
+            'clientOrderId': str(order.get('externalId', '')),
+            'status': 'unknown',
+            'symbol': order.get('market', 'ETH-USD'),
+            'side': order.get('side', 'BUY').lower(),
             'price': 0,
             'amount': 0,
             'filled': 0,

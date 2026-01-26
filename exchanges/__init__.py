@@ -18,6 +18,13 @@ try:
 except ImportError:
     NADO_AVAILABLE = False
 
+# Import Extended adapter if available
+try:
+    from .extended_adapter import ExtendedAdapter
+    EXTENDED_AVAILABLE = True
+except ImportError:
+    EXTENDED_AVAILABLE = False
+
 
 def create_exchange_adapter(exchange_type: str = "lighter", **kwargs) -> Optional[ExchangeInterface]:
     """
@@ -70,6 +77,17 @@ def create_exchange_adapter(exchange_type: str = "lighter", **kwargs) -> Optiona
             market_id=market_id,
             product_id=product_id,
             subaccount_name=subaccount_name,
+        )
+    elif exchange_type.lower() == "extended":
+        if not EXTENDED_AVAILABLE:
+            raise ImportError("Extended adapter not available. Please install required dependencies (aiohttp).")
+
+        market_id = kwargs.get('market_id', 0)
+        symbol = kwargs.get('symbol', 'ETH-USD')
+
+        return ExtendedAdapter(
+            market_id=market_id,
+            symbol=symbol,
         )
     else:
         return None
