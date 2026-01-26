@@ -1035,24 +1035,41 @@ class NadoAdapter(ExchangeInterface):
         logger.info(f"Fill event received: {data}")
         
         if 'orders' in self.callbacks and self.callbacks['orders']:
-            # Extract fill information
-            fill_data = data.get('fill', data)
-            digest = fill_data.get('digest', fill_data.get('order_digest', ''))
+            # Extract fill information from the actual fill event format
+            # Fill event fields: order_digest, price, filled_qty, remaining_qty, original_qty, is_bid, etc.
+            digest = data.get('order_digest', '')
+            price_x18 = data.get('price', '0')
+            filled_qty = data.get('filled_qty', '0')
+            original_qty = data.get('original_qty', '0')
+            remaining_qty = data.get('remaining_qty', '0')
+            is_bid = data.get('is_bid', True)
+            product_id = data.get('product_id', self.product_id)
             
-            # Create a filled order object
+            # Determine if fully filled or partially filled
+            status = 'filled' if remaining_qty == '0' else 'open'
+            
+            # Amount sign: positive for buy (bid), negative for sell (ask)
+            amount_sign = 1 if is_bid else -1
+            amount = str(int(original_qty) * amount_sign)
+            unfilled = remaining_qty
+            
+            # Create a filled order object in Nado format
             filled_order = {
                 'digest': digest,
-                'status': 'filled',  # Mark as filled
-                'product_id': fill_data.get('product_id', self.product_id),
-                'price_x18': fill_data.get('price_x18', fill_data.get('fill_price_x18', '0')),
-                'amount': fill_data.get('amount', fill_data.get('fill_amount', '0')),
-                'unfilled_amount': '0',  # Fully filled
-                'nonce': fill_data.get('nonce', ''),
+                'status': status,
+                'product_id': product_id,
+                'price_x18': price_x18,
+                'amount': amount,
+                'unfilled_amount': unfilled,
+                'nonce': '',  # Not provided in fill event
             }
+            
+            logger.info(f"Processing fill: digest={digest}, price_x18={price_x18}, amount={amount}, status={status}, is_bid={is_bid}")
             
             normalized_orders = normalize_orders_list([filled_order])
             if normalized_orders:
-                logger.info(f"Processing filled order: {normalized_orders[0].get('id')}, status={normalized_orders[0].get('status')}")
+                order = normalized_orders[0]
+                logger.info(f"Normalized filled order: id={order.get('id')}, side={order.get('side')}, price={order.get('price')}, status={order.get('status')}")
                 callback = self.callbacks['orders']
                 if asyncio.iscoroutinefunction(callback):
                     asyncio.create_task(callback(self.address, normalized_orders))
