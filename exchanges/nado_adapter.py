@@ -1045,6 +1045,18 @@ class NadoAdapter(ExchangeInterface):
             is_bid = data.get('is_bid', True)
             product_id = data.get('product_id', self.product_id)
             
+            # IMPORTANT: Find the client_order_id from digest
+            # buy_orders/sell_orders use client_order_id as key, not digest
+            client_order_id = ''
+            for cid, d in self.order_digests.items():
+                if d == digest:
+                    client_order_id = cid
+                    break
+            
+            if not client_order_id:
+                logger.warning(f"Could not find client_order_id for digest {digest}, using digest as ID")
+                client_order_id = digest
+            
             # Determine if fully filled or partially filled
             status = 'filled' if remaining_qty == '0' else 'open'
             
@@ -1053,28 +1065,34 @@ class NadoAdapter(ExchangeInterface):
             amount = str(int(original_qty) * amount_sign)
             unfilled = remaining_qty
             
-            # Create a filled order object in Nado format
-            filled_order = {
-                'digest': digest,
-                'status': status,
-                'product_id': product_id,
-                'price_x18': price_x18,
-                'amount': amount,
-                'unfilled_amount': unfilled,
-                'nonce': '',  # Not provided in fill event
+            # Parse price from x18 format
+            X18 = 10 ** 18
+            price = int(price_x18) / X18
+            amount_float = abs(int(original_qty)) / X18
+            filled_float = abs(int(original_qty) - int(remaining_qty)) / X18
+            
+            # Create order in CCXT format directly (bypass converter issues)
+            ccxt_order = {
+                'id': client_order_id,  # Use client_order_id to match buy_orders/sell_orders
+                'clientOrderId': client_order_id,
+                'status': 'closed' if status == 'filled' else 'open',  # CCXT uses 'closed' for filled
+                'symbol': f'PRODUCT_{product_id}',
+                'side': 'buy' if is_bid else 'sell',
+                'price': price,
+                'amount': amount_float,
+                'filled': filled_float,
+                'remaining': abs(int(remaining_qty)) / X18,
+                'cost': filled_float * price,
+                'info': data,
             }
             
-            logger.info(f"Processing fill: digest={digest}, price_x18={price_x18}, amount={amount}, status={status}, is_bid={is_bid}")
+            logger.info(f"Processing fill: client_order_id={client_order_id}, digest={digest}, side={'buy' if is_bid else 'sell'}, price={price}, amount={amount_float}, status={ccxt_order['status']}")
             
-            normalized_orders = normalize_orders_list([filled_order])
-            if normalized_orders:
-                order = normalized_orders[0]
-                logger.info(f"Normalized filled order: id={order.get('id')}, side={order.get('side')}, price={order.get('price')}, status={order.get('status')}")
-                callback = self.callbacks['orders']
-                if asyncio.iscoroutinefunction(callback):
-                    asyncio.create_task(callback(self.address, normalized_orders))
-                else:
-                    callback(self.address, normalized_orders)
+            callback = self.callbacks['orders']
+            if asyncio.iscoroutinefunction(callback):
+                asyncio.create_task(callback(self.address, [ccxt_order]))
+            else:
+                callback(self.address, [ccxt_order])
 
     async def _subscribe_market_stats(self):
         """Subscribe to best bid/offer stream."""
