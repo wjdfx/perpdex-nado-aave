@@ -253,15 +253,22 @@ class NadoAdapter(ExchangeInterface):
                 query_params.update(params)
 
             url = f"{self.gateway_rest}/query"
+            logger.debug(f"REST query: {url} params={query_params}")
+            
             async with session.get(url, params=query_params) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    logger.error(f"REST query HTTP error {response.status}: {text[:200]}")
+                    return {}
+                    
                 data = await response.json()
                 if data.get('status') == 'success':
                     return data.get('data', {})
                 else:
-                    logger.error(f"Query failed: {data.get('error', 'Unknown error')}")
+                    logger.error(f"Query {query_type} failed: {data.get('error', 'Unknown error')} (code: {data.get('error_code', 'N/A')})")
                     return {}
         except Exception as e:
-            logger.error(f"REST query error: {e}")
+            logger.error(f"REST query error ({query_type}): {e}")
             return {}
 
     async def _rest_execute(self, payload: Dict) -> Dict:
@@ -733,6 +740,15 @@ class NadoAdapter(ExchangeInterface):
         if proxy:
             logger.warning(f"Nado adapter: Proxy support ({proxy}) may not be fully implemented.")
 
+        # First, poll market price immediately to get initial price
+        if 'market_stats' in callbacks:
+            logger.info("Fetching initial market price...")
+            initial_price = await self._poll_market_price()
+            if initial_price:
+                logger.info(f"Initial market price: {initial_price}")
+            else:
+                logger.warning("Could not fetch initial market price")
+
         # Try to initialize WebSocket connection
         if not self.ws_initialized:
             await self._initialize_ws()
@@ -752,28 +768,56 @@ class NadoAdapter(ExchangeInterface):
         else:
             # WebSocket not available, start REST polling task
             logger.info("WebSocket not available, starting REST API polling for market data")
-            asyncio.create_task(self._rest_polling_task())
+        
+        # Always start REST polling as a backup (even if WebSocket works)
+        # This ensures we always have price updates
+        asyncio.create_task(self._rest_polling_task())
 
     async def _rest_polling_task(self):
         """Poll REST API for updates when WebSocket is not available."""
         while True:
             try:
-                # Poll market prices for mark_price
-                if 'market_stats' in self.callbacks:
-                    prices = await self._rest_query("market_prices", {"product_id": self.product_id})
-                    if prices:
-                        mark_price = self._from_x18(int(prices.get('mark_price_x18', '0')))
-                        stats = {'mark_price': mark_price}
+                await self._poll_market_price()
+                await asyncio.sleep(3)  # Poll every 3 seconds
+            except Exception as e:
+                logger.error(f"REST polling error: {e}")
+                await asyncio.sleep(5)
+
+    async def _poll_market_price(self):
+        """Poll market price once and trigger callback."""
+        try:
+            # Use market_price (singular) query
+            prices = await self._rest_query("market_price", {"product_id": self.product_id})
+            if prices:
+                # Nado returns bid_x18 and ask_x18
+                bid_x18 = prices.get('bid_x18', '0')
+                ask_x18 = prices.get('ask_x18', '0')
+                
+                bid = self._from_x18(int(bid_x18)) if bid_x18 else 0
+                ask = self._from_x18(int(ask_x18)) if ask_x18 else 0
+                
+                # Calculate mark price as mid price
+                mark_price = (bid + ask) / 2 if bid and ask else bid or ask
+                
+                if mark_price > 0:
+                    stats = {
+                        'mark_price': mark_price,
+                        'best_bid': bid,
+                        'best_ask': ask
+                    }
+                    logger.debug(f"Market price polled: mark_price={mark_price}, bid={bid}, ask={ask}")
+                    
+                    if 'market_stats' in self.callbacks and self.callbacks['market_stats']:
                         callback = self.callbacks['market_stats']
                         if asyncio.iscoroutinefunction(callback):
                             asyncio.create_task(callback(str(self.market_id), stats))
                         else:
                             callback(str(self.market_id), stats)
-
-                await asyncio.sleep(5)  # Poll every 5 seconds
-            except Exception as e:
-                logger.error(f"REST polling error: {e}")
-                await asyncio.sleep(10)
+                    return mark_price
+            return None
+        except Exception as e:
+            logger.error(f"Poll market price error: {e}")
+            return None
 
     async def _initialize_ws(self):
         """Initialize WebSocket connection."""
@@ -853,13 +897,24 @@ class NadoAdapter(ExchangeInterface):
             await self._handle_fill(data)
 
     async def _handle_market_stats(self, data: dict):
-        """Handle market stats updates."""
+        """Handle market stats updates from WebSocket."""
         if 'market_stats' in self.callbacks and self.callbacks['market_stats']:
+            # WebSocket best_bid_offer stream returns bid_x18 and ask_x18
+            bid_x18 = data.get('bid_x18', data.get('best_bid', '0'))
+            ask_x18 = data.get('ask_x18', data.get('best_ask', '0'))
+            
+            bid = self._from_x18(int(bid_x18)) if bid_x18 else 0
+            ask = self._from_x18(int(ask_x18)) if ask_x18 else 0
+            mark_price = (bid + ask) / 2 if bid and ask else bid or ask
+            
             stats = {
-                'mark_price': self._from_x18(int(data.get('best_bid', '0'))) if data.get('best_bid') else 0,
-                'best_bid': self._from_x18(int(data.get('best_bid', '0'))) if data.get('best_bid') else 0,
-                'best_ask': self._from_x18(int(data.get('best_ask', '0'))) if data.get('best_ask') else 0
+                'mark_price': mark_price,
+                'best_bid': bid,
+                'best_ask': ask
             }
+            
+            logger.debug(f"WebSocket market stats: {stats}")
+            
             callback = self.callbacks['market_stats']
             if asyncio.iscoroutinefunction(callback):
                 asyncio.create_task(callback(str(self.market_id), stats))
