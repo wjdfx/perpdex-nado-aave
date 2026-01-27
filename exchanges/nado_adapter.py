@@ -829,10 +829,10 @@ class NadoAdapter(ExchangeInterface):
                 poll_count += 1
                 if poll_count % 2 == 0:
                     await self._poll_orders()
-                    await self._check_for_fills()  # Check for order disappearances (fills)
+                    await self._check_for_fills()
                     await self._poll_positions()
                 
-                await asyncio.sleep(3)  # Poll every 3 seconds
+                await asyncio.sleep(5)  # 5秒 x 2次 = 10秒检查一次订单，和策略报告同步
             except Exception as e:
                 logger.error(f"REST polling error: {e}")
                 await asyncio.sleep(5)
