@@ -823,11 +823,13 @@ class NadoAdapter(ExchangeInterface):
                 # Poll market price every cycle
                 await self._poll_market_price()
                 
-                # Only poll orders and positions if WebSocket is NOT connected
-                # This avoids duplicate callbacks when WebSocket is working
+                # ALWAYS poll orders to detect fills
+                # WebSocket fill events depend on order_digests which is lost on restart
+                # REST polling ensures we detect order changes even after restart
                 poll_count += 1
-                if poll_count % 2 == 0 and not self.ws_initialized:
+                if poll_count % 2 == 0:
                     await self._poll_orders()
+                    await self._check_for_fills()  # Check for order disappearances (fills)
                     await self._poll_positions()
                 
                 await asyncio.sleep(3)  # Poll every 3 seconds
@@ -870,6 +872,100 @@ class NadoAdapter(ExchangeInterface):
                     callback(self.address, positions)
         except Exception as e:
             logger.error(f"Poll positions error: {e}")
+
+    async def _check_for_fills(self):
+        """Check for order disappearances which indicate fills.
+        
+        This method tracks orders between polls and detects when orders
+        disappear (meaning they were filled or cancelled).
+        When an order disappears, we trigger a 'filled' callback.
+        """
+        try:
+            if 'orders' not in self.callbacks or not self.callbacks['orders']:
+                return
+            
+            # Initialize tracking dict if not exists
+            if not hasattr(self, '_last_known_orders'):
+                self._last_known_orders = {}
+            
+            # Get current orders
+            current_orders = await self.get_orders()
+            if current_orders is None:
+                return
+            
+            # Build current orders dict: digest -> order_info
+            current_order_digests = {}
+            for order in current_orders:
+                digest = order.get('digest', '')
+                if digest:
+                    current_order_digests[digest] = order
+            
+            # Find disappeared orders (were in last poll, not in current)
+            disappeared_orders = []
+            for digest, order_info in self._last_known_orders.items():
+                if digest not in current_order_digests:
+                    # Order disappeared - likely filled
+                    disappeared_orders.append((digest, order_info))
+            
+            # Update tracking
+            self._last_known_orders = current_order_digests
+            
+            if not disappeared_orders:
+                return
+            
+            # Process disappeared orders as fills
+            fills = []
+            for digest, order_info in disappeared_orders:
+                # Try to find client_order_id from our tracking
+                client_order_id = ''
+                for cid, d in self.order_digests.items():
+                    if d == digest:
+                        client_order_id = cid
+                        break
+                
+                if not client_order_id:
+                    # Use a shortened digest as fallback ID
+                    client_order_id = digest[:10] if len(digest) > 10 else digest
+                    logger.debug(f"No client_order_id for disappeared order {digest}, using shortened digest")
+                
+                # Parse order info
+                is_bid = order_info.get('is_bid', True)
+                price_x18 = order_info.get('price_x18', '0')
+                amount_x18 = order_info.get('initial_amount_x18', order_info.get('amount_x18', '0'))
+                
+                X18 = 10 ** 18
+                price = int(price_x18) / X18 if price_x18 else 0
+                amount = abs(int(amount_x18)) / X18 if amount_x18 else 0
+                
+                # Create filled order in CCXT format
+                ccxt_order = {
+                    'id': client_order_id,
+                    'clientOrderId': client_order_id,
+                    'status': 'closed',  # CCXT uses 'closed' for filled
+                    'symbol': f'PRODUCT_{self.product_id}',
+                    'side': 'buy' if is_bid else 'sell',
+                    'price': price,
+                    'amount': amount,
+                    'filled': amount,
+                    'remaining': 0,
+                    'cost': amount * price,
+                    'info': order_info,
+                }
+                fills.append(ccxt_order)
+                logger.info(f"🔥 Detected fill (order disappeared): client_id={client_order_id}, "
+                           f"side={'buy' if is_bid else 'sell'}, price={price}, amount={amount}")
+            
+            # Trigger callback for fills
+            if fills:
+                logger.info(f"🔥 Triggering orders callback for {len(fills)} disappeared orders")
+                callback = self.callbacks['orders']
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(self.address, fills))
+                else:
+                    callback(self.address, fills)
+                    
+        except Exception as e:
+            logger.error(f"_check_for_fills error: {e}", exc_info=True)
 
     async def _poll_market_price(self):
         """Poll market price once and trigger callback."""
