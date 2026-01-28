@@ -313,13 +313,14 @@ async def _on_close_side_filled(trade_price: float = 0.0):
         return
 
     logger.info("平仓侧被吃单补单")
-    orders = []
+    open_orders = []
+    close_orders = []
 
     # 1. 补充开仓单 (Buy Back)
     if not trading_state.grid_pause:
         new_open_order = await _calc_next_close_side_open_order()
         if new_open_order:
-            orders.append(new_open_order)
+            open_orders.append(new_open_order)
 
     # 2. 补充平仓单 (如果还有剩余仓位需要止盈)
     current_close_orders_volume = (
@@ -333,24 +334,49 @@ async def _on_close_side_filled(trade_price: float = 0.0):
     ):
         new_close_order = await _calc_next_close_side_close_order()
         if new_close_order:
-            orders.append(new_close_order)
+            close_orders.append(new_close_order)
 
-    if orders:
-        success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
+    # 分别处理开仓单和平仓单
+    all_order_ids = []
+    
+    # 先处理开仓单（不使用 reduce_only）
+    if open_orders:
+        success, order_ids = await trading_state.grid_trading.place_multi_orders(open_orders)
         if success:
             for idx, oid in enumerate(order_ids):
-                is_ask, price, _ = orders[idx]
+                is_ask, price, _ = open_orders[idx]
                 if is_ask:
                     trading_state.sell_orders[oid] = price
                 else:
                     trading_state.buy_orders[oid] = price
-            logger.info(
-                f"平仓侧被吃单补充订单成功: "
-                f"{[('卖单' if is_ask else '买单', price) for is_ask, price, _ in orders]}, "
-                f"订单ID={order_ids}"
-            )
+            all_order_ids.extend(order_ids)
         else:
-            logger.error("平仓侧补充订单 place_multi_orders 失败")
+            logger.error("平仓侧补充开仓单失败")
+    
+    # 再处理平仓单（使用 reduce_only=True）
+    if close_orders:
+        for is_ask, price, amount in close_orders:
+            success, order_id = await trading_state.grid_trading.place_single_order(
+                is_ask=is_ask,
+                price=price,
+                amount=amount,
+                reduce_only=True,  # 平仓单使用 Reduce Only，避免部分成交后剩余订单消失
+            )
+            if success:
+                if is_ask:
+                    trading_state.sell_orders[order_id] = price
+                else:
+                    trading_state.buy_orders[order_id] = price
+                all_order_ids.append(order_id)
+            else:
+                logger.error(f"平仓侧补充平仓单失败: is_ask={is_ask}, price={price}")
+    
+    if all_order_ids:
+        logger.info(
+            f"平仓侧被吃单补充订单成功: "
+            f"开仓单={len(open_orders)}, 平仓单={len(close_orders)}, "
+            f"订单ID={all_order_ids}"
+        )
 
 
 async def _calc_next_close_side_open_order() -> Optional[Tuple[bool, float, float]]:
@@ -562,6 +588,7 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
         is_ask=CLOSE_SIDE_IS_ASK,
         price=new_price,
         amount=GRID_CONFIG["GRID_AMOUNT"],
+        reduce_only=True,  # 平仓单使用 Reduce Only，避免部分成交后剩余订单消失
     )
     if success:
         if CLOSE_SIDE_IS_ASK:
@@ -641,6 +668,7 @@ async def _replenish_config_close_orders():
             is_ask=CLOSE_SIDE_IS_ASK,
             price=new_price,
             amount=GRID_CONFIG["GRID_AMOUNT"],
+            reduce_only=True,  # 平仓单使用 Reduce Only，避免部分成交后剩余订单消失
         )
         if success:
             if CLOSE_SIDE_IS_ASK:

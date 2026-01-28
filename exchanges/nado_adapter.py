@@ -303,9 +303,16 @@ class NadoAdapter(ExchangeInterface):
             logger.error(f"REST execute error: {e}")
             return {"status": "failure", "error": str(e)}
 
-    async def place_single_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
+    async def place_single_order(self, is_ask: bool, price: float, amount: float, reduce_only: bool = False) -> Tuple[bool, str]:
         """
         Place single limit order.
+        
+        Args:
+            is_ask: Whether this is a sell order
+            price: Order price
+            amount: Order amount
+            reduce_only: If True, order can only reduce position (cannot open new position)
+        
         Returns: (success, order_id/client_order_id)
         """
         try:
@@ -325,10 +332,10 @@ class NadoAdapter(ExchangeInterface):
             if is_ask:
                 amount_x18 = -amount_x18
             
-            logger.debug(f"Placing order: is_ask={is_ask}, price_x18={price_x18}, amount_x18={amount_x18}")
+            logger.debug(f"Placing order: is_ask={is_ask}, price_x18={price_x18}, amount_x18={amount_x18}, reduce_only={reduce_only}")
 
-            # Build appendix (POST_ONLY by default)
-            appendix = self._build_appendix(order_type=3)  # POST_ONLY
+            # Build appendix (POST_ONLY by default, with optional reduce_only)
+            appendix = self._build_appendix(order_type=3, reduce_only=reduce_only)  # POST_ONLY
 
             # Order message for signing
             order_message = {

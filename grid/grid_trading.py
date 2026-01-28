@@ -128,7 +128,7 @@ class GridTrading:
         return await self.exchange.place_multi_orders(orders)
     
 
-    async def place_single_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
+    async def place_single_order(self, is_ask: bool, price: float, amount: float, reduce_only: bool = False) -> Tuple[bool, str]:
         """
         放置单个订单
 
@@ -136,10 +136,17 @@ class GridTrading:
             is_ask: 是否为卖单
             price: 价格
             amount: 数量
+            reduce_only: 是否仅减仓（平仓单使用，不能开新仓）
 
         Returns:
             Tuple[bool, str]: (是否成功放置订单, 订单ID)
         """
+        # Check if exchange supports reduce_only parameter
+        if hasattr(self.exchange, 'place_single_order'):
+            import inspect
+            sig = inspect.signature(self.exchange.place_single_order)
+            if 'reduce_only' in sig.parameters:
+                return await self.exchange.place_single_order(is_ask, price, amount, reduce_only=reduce_only)
         return await self.exchange.place_single_order(is_ask, price, amount)
             
     async def place_single_market_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:

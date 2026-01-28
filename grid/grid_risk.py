@@ -351,8 +351,25 @@ async def _save_pause_position():
                  
              logger.info(f"订单调整完成，最终计划: {round(total_order_amount, 6)}")
 
-        success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
-        if success:
+        # 占位订单都是平仓单，使用 reduce_only=True 避免部分成交后剩余订单消失
+        order_ids = []
+        for is_ask, price, amount in orders:
+            success, order_id = await trading_state.grid_trading.place_single_order(
+                is_ask=is_ask,
+                price=price,
+                amount=amount,
+                reduce_only=True,  # 占位订单是平仓单，使用 Reduce Only
+            )
+            if success:
+                order_ids.append(order_id)
+            else:
+                logger.error(f"占位订单创建失败: is_ask={is_ask}, price={price}, amount={amount}")
+                # 如果失败，取消已创建的订单
+                if order_ids:
+                    await trading_state.grid_trading.cancel_grid_orders(order_ids)
+                return
+        
+        if order_ids:
             trading_state.pause_position_exist = True
             trading_state.available_position_size = 0.0
             logger.info(f"占位订单创建成功: {order_ids}, 订单详情: {orders}")

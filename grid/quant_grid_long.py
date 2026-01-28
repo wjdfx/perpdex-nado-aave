@@ -560,6 +560,7 @@ async def _sell_side_filled_order(trade_price: float = 0.0):
             orders.append(buy_order)
 
     # 卖单侧被吃单到补充卖单
+    sell_orders = []
     if (
         trading_state.available_position_size
         > (len(trading_state.sell_orders) + 1) * GRID_CONFIG["GRID_AMOUNT"]
@@ -567,8 +568,12 @@ async def _sell_side_filled_order(trade_price: float = 0.0):
     ):
         sell_order = await _sell_side_replenish_sell_order()
         if sell_order:
-            orders.append(sell_order)
+            sell_orders.append(sell_order)
 
+    # 分别处理买单（开仓单）和卖单（平仓单）
+    all_order_ids = []
+    
+    # 先处理买单（开仓单，不使用 reduce_only）
     if orders:
         success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
         if success:
@@ -578,11 +583,29 @@ async def _sell_side_filled_order(trade_price: float = 0.0):
                     trading_state.sell_orders[oid] = price
                 else:
                     trading_state.buy_orders[oid] = price
-            logger.info(
-                f"卖单侧被吃单补充订单成功: {[( '买单' if not is_ask else '卖单', price) for is_ask, price, _ in orders]}, 订单ID={order_ids}"
-            )
+            all_order_ids.extend(order_ids)
         else:
-            logger.error("卖单侧补充订单 place_multi_orders 失败")
+            logger.error("卖单侧补充买单失败")
+    
+    # 再处理卖单（平仓单，使用 reduce_only=True）
+    if sell_orders:
+        for is_ask, price, amount in sell_orders:
+            success, order_id = await trading_state.grid_trading.place_single_order(
+                is_ask=is_ask,
+                price=price,
+                amount=amount,
+                reduce_only=True,  # 卖单是平仓单，使用 Reduce Only，避免部分成交后剩余订单消失
+            )
+            if success:
+                trading_state.sell_orders[order_id] = price
+                all_order_ids.append(order_id)
+            else:
+                logger.error(f"卖单侧补充卖单失败: price={price}")
+    
+    if all_order_ids:
+        logger.info(
+            f"卖单侧被吃单补充订单成功: 买单={len(orders)}, 卖单={len(sell_orders)}, 订单ID={all_order_ids}"
+        )
 
 
 async def _sell_side_replenish_buy_order():
@@ -749,6 +772,7 @@ async def _over_range_replenish_sell_order(high_buy_price: float):
             is_ask=True,
             price=new_sell_price,
             amount=GRID_CONFIG["GRID_AMOUNT"],
+            reduce_only=True,  # 卖单是平仓单，使用 Reduce Only，避免部分成交后剩余订单消失
         )
         if success:
             trading_state.sell_orders[order_id] = new_sell_price
@@ -793,6 +817,7 @@ async def _sell_side_replenish_config_orders():
             is_ask=True,
             price=new_sell_price,
             amount=GRID_CONFIG["GRID_AMOUNT"],
+            reduce_only=True,  # 卖单是平仓单，使用 Reduce Only，避免部分成交后剩余订单消失
         )
         if success:
             trading_state.sell_orders[order_id] = new_sell_price
