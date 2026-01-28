@@ -92,6 +92,7 @@ class GridTrading:
         Returns:
             bool: 是否成功放置所有订单
         """
+        from .grid_state import OPEN_SIDE_IS_ASK, CLOSE_SIDE_IS_ASK
             
         try:
             # 生成网格订单
@@ -102,13 +103,52 @@ class GridTrading:
                         f"网格数量={grid_count}, 单网格量={grid_amount}, 价差={grid_spread}%")
             logger.info(f"订单详情: {[(f'卖单' if is_ask else '买单', price, amount) for is_ask, price, amount in orders]}")
 
-            success, _ = await self.exchange.place_multi_orders(orders)
+            # 分别处理开仓单和平仓单
+            open_orders = []
+            close_orders = []
+            
+            for is_ask, price, amount in orders:
+                # 判断是开仓单还是平仓单
+                is_close_side = (is_ask == CLOSE_SIDE_IS_ASK)
+                if is_close_side:
+                    close_orders.append((is_ask, price, amount))
+                else:
+                    open_orders.append((is_ask, price, amount))
+            
+            all_order_ids = []
+            
+            # 先处理开仓单（不使用 reduce_only）
+            if open_orders:
+                success, order_ids = await self.exchange.place_multi_orders(open_orders)
+                if success:
+                    all_order_ids.extend(order_ids)
+                else:
+                    logger.error("批量发送开仓订单失败")
+                    return False
+            
+            # 再处理平仓单（使用 reduce_only=True）
+            if close_orders:
+                for is_ask, price, amount in close_orders:
+                    success, order_id = await self.place_single_order(
+                        is_ask=is_ask,
+                        price=price,
+                        amount=amount,
+                        reduce_only=True,  # 平仓单使用 Reduce Only
+                    )
+                    if success:
+                        all_order_ids.append(order_id)
+                    else:
+                        logger.error(f"平仓单下单失败: is_ask={is_ask}, price={price}")
+                        # 如果失败，取消已创建的订单
+                        if all_order_ids:
+                            await self.cancel_grid_orders(all_order_ids)
+                        return False
 
-            if success:
-                logger.info(f"成功放置 {len(orders)} 个网格订单")
+            if all_order_ids:
+                logger.info(f"成功放置 {len(all_order_ids)} 个网格订单 (开仓: {len(open_orders)}, 平仓: {len(close_orders)})")
                 return True
             else:
-                logger.error("批量发送网格订单失败")
+                logger.error("没有成功放置任何订单")
                 return False
 
         except Exception as e:
