@@ -56,20 +56,63 @@ async def check_order_fills(orders: dict):
         # 记录是否需要补单，如果不在列表中，有可能是直接成交，则不补单
         replenish = False
 
+        remaining_amount = float(order.get("remaining", initial_base_amount - filled_amount))
+        
         logger.info(
             f"检查订单: ID={client_order_index}, 方向={side}, "
-            f"价格={price}, 状态={status}, 成交量={filled_amount}"
+            f"价格={price}, 状态={status}, 成交量={filled_amount}, "
+            f"总数量={initial_base_amount}, 剩余={remaining_amount}"
         )
 
         async with replenish_grid_lock:
+            # 检测部分成交情况：订单有成交但状态不是 closed/filled
+            is_partially_filled = (
+                filled_amount > 0 
+                and filled_amount < initial_base_amount 
+                and status not in ["closed", "filled"]
+            )
+            
+            # 检测完全成交或部分成交后剩余部分被取消的情况
+            is_fully_filled_or_cancelled = (
+                filled_amount > 0 
+                and remaining_amount == 0 
+                and status not in ["closed", "filled"]
+            )
+            
             if status in ["open"]:
                 if is_ask:
                     trading_state.sell_orders[client_order_index] = float(price)
                 else:
                     trading_state.buy_orders[client_order_index] = float(price)
+            
+            # 处理部分成交的情况
+            if is_partially_filled:
+                logger.warning(
+                    f"检测到部分成交订单: ID={client_order_index}, "
+                    f"已成交={filled_amount}, 剩余={remaining_amount}, 状态={status}"
+                )
+                # 如果订单在活跃列表中，需要处理部分成交
+                if is_ask and client_order_index in trading_state.sell_orders:
+                    # 部分成交的订单仍然在活跃列表中，暂时不删除
+                    # 但如果剩余数量很小（小于最小交易单位），可以视为完全成交
+                    if remaining_amount < GRID_CONFIG["GRID_AMOUNT"] * 0.1:  # 剩余小于10%视为完全成交
+                        logger.info(
+                            f"部分成交订单剩余量过小，视为完全成交: ID={client_order_index}, "
+                            f"剩余={remaining_amount}"
+                        )
+                        del trading_state.sell_orders[client_order_index]
+                        replenish = True
+                elif not is_ask and client_order_index in trading_state.buy_orders:
+                    if remaining_amount < GRID_CONFIG["GRID_AMOUNT"] * 0.1:
+                        logger.info(
+                            f"部分成交订单剩余量过小，视为完全成交: ID={client_order_index}, "
+                            f"剩余={remaining_amount}"
+                        )
+                        del trading_state.buy_orders[client_order_index]
+                        replenish = True
 
-            # 如果订单已成交
-            if status in ["closed", "filled"] and filled_amount > 0:
+            # 如果订单已完全成交（状态为 closed/filled 或剩余为0）
+            if (status in ["closed", "filled"] or is_fully_filled_or_cancelled) and filled_amount > 0:
                 trading_state.filled_count += 1
                 trading_state.last_trade_price = float(price)
                 
@@ -79,34 +122,41 @@ async def check_order_fills(orders: dict):
                     if client_order_index in trading_state.sell_orders:
                         del trading_state.sell_orders[client_order_index]
                         logger.info(
-                            f"从活跃卖单订单列表删除订单ID={client_order_index}, 价格={price}"
+                            f"从活跃卖单订单列表删除订单ID={client_order_index}, 价格={price}, "
+                            f"已成交={filled_amount}"
                         )
                         replenish = True
                 else:
                     if client_order_index in trading_state.buy_orders:
                         del trading_state.buy_orders[client_order_index]
                         logger.info(
-                            f"从活跃买单订单列表删除订单ID={client_order_index}, 价格={price}"
+                            f"从活跃买单订单列表删除订单ID={client_order_index}, 价格={price}, "
+                            f"已成交={filled_amount}"
                         )
                         replenish = True
 
                 # 如果是平仓单（Close Side）成交
                 if is_close_side_order and replenish:
-                    # 吃掉平仓单时，由于仓位更新推送较慢，先将记录仓位提前降低
+                    # 按实际成交数量计算仓位变化，而不是固定的 GRID_AMOUNT
+                    actual_filled = min(filled_amount, GRID_CONFIG["GRID_AMOUNT"])
                     trading_state.available_position_size = round(
-                        trading_state.available_position_size
-                        - GRID_CONFIG["GRID_AMOUNT"],
+                        trading_state.available_position_size - actual_filled,
                         2,
                     )
 
-                    # 收到平仓单成交时，证明完成了一次网格套利，记录套利收益
+                    # 按实际成交数量计算收益
                     once_profit = (
-                        trading_state.base_grid_single_price
-                        * GRID_CONFIG["GRID_AMOUNT"]
+                        trading_state.base_grid_single_price * actual_filled
                     )
                     trading_state.active_profit += once_profit
                     trading_state.total_profit += once_profit
                     trading_state.available_reduce_profit += once_profit
+                    
+                    logger.info(
+                        f"平仓单成交处理: 订单ID={client_order_index}, "
+                        f"实际成交={actual_filled}, 仓位减少={actual_filled}, "
+                        f"收益={once_profit}"
+                    )
 
         # 在锁范围外补充网格订单
         if replenish:
@@ -272,10 +322,15 @@ async def _cancel_orders(cancel_orders: List[int]):
 async def _sync_current_orders():
     """
     同步订单状态（通过 REST API 核对当前订单列表）
+    检测订单消失并处理部分成交的情况
     """
     trading_state = grid_state.trading_state
     GRID_CONFIG = grid_state.GRID_CONFIG
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
+    
+    # 保存同步前的订单列表，用于检测消失的订单
+    previous_buy_orders = trading_state.buy_orders.copy()
+    previous_sell_orders = trading_state.sell_orders.copy()
     
     # 通过 rest api 核对当前订单列表
     orders = await trading_state.grid_trading.get_orders_by_rest()
@@ -292,6 +347,9 @@ async def _sync_current_orders():
     sell_orders = {}
     trading_state.pause_positions = {}
     trading_state.pause_orders = {}
+    
+    # 记录同步时发现的订单ID
+    found_order_ids = set()
 
     for order in normalized_orders:
         order_id = str(order.get("clientOrderId") or order.get("id", ""))
@@ -300,8 +358,23 @@ async def _sync_current_orders():
         price = round(float(order.get("price", 0)), 6)
         status = order.get("status")
         initial_base_amount = float(order.get("amount", 0))
+        filled_amount = float(order.get("filled", 0))
+        remaining_amount = float(order.get("remaining", initial_base_amount - filled_amount))
 
+        found_order_ids.add(order_id)
+        
+        # 处理非活跃状态的订单（包括部分成交后剩余部分被取消的情况）
         if status != "open":
+            # 检查是否是部分成交后剩余部分被取消的订单
+            if filled_amount > 0 and remaining_amount == 0:
+                logger.warning(
+                    f"检测到订单部分成交后剩余部分被取消: ID={order_id}, "
+                    f"已成交={filled_amount}, 总数量={initial_base_amount}, 状态={status}"
+                )
+                # 触发订单成交处理逻辑
+                await _handle_disappeared_order_with_fills(
+                    order_id, is_ask, price, filled_amount, initial_base_amount
+                )
             continue
 
         # 判断订单是否在平仓侧
@@ -321,5 +394,87 @@ async def _sync_current_orders():
         else:
             buy_orders[order_id] = price
 
+    # 检测消失的订单（在本地存在但在交易所不存在）
+    disappeared_buy_orders = set(previous_buy_orders.keys()) - found_order_ids
+    disappeared_sell_orders = set(previous_sell_orders.keys()) - found_order_ids
+    
+    # 处理消失的订单（可能是部分成交后剩余部分被取消）
+    if disappeared_buy_orders or disappeared_sell_orders:
+        logger.warning(
+            f"检测到订单消失: 买单={len(disappeared_buy_orders)}, "
+            f"卖单={len(disappeared_sell_orders)}"
+        )
+        # 尝试通过历史订单查询获取已成交数量
+        # 注意：这里需要查询订单历史，如果交易所API支持的话
+        # 目前先记录日志，等待后续的订单更新消息来处理
+
     trading_state.buy_orders = buy_orders
     trading_state.sell_orders = sell_orders
+
+
+async def _handle_disappeared_order_with_fills(
+    order_id: str, 
+    is_ask: bool, 
+    price: float, 
+    filled_amount: float, 
+    initial_amount: float
+):
+    """
+    处理消失的订单（部分成交后剩余部分被取消）
+    
+    Args:
+        order_id: 订单ID
+        is_ask: 是否为卖单
+        price: 订单价格
+        filled_amount: 已成交数量
+        initial_amount: 初始订单数量
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    # 判断是开仓侧还是平仓侧订单
+    if OPEN_SIDE_IS_ASK:  # 做空策略
+        is_close_side_order = not is_ask
+    else:  # 做多策略
+        is_close_side_order = is_ask
+    
+    # 从活跃订单列表中删除
+    if is_ask:
+        if order_id in trading_state.sell_orders:
+            del trading_state.sell_orders[order_id]
+            logger.info(
+                f"处理消失的卖单: ID={order_id}, 已成交={filled_amount}, "
+                f"总数量={initial_amount}"
+            )
+    else:
+        if order_id in trading_state.buy_orders:
+            del trading_state.buy_orders[order_id]
+            logger.info(
+                f"处理消失的买单: ID={order_id}, 已成交={filled_amount}, "
+                f"总数量={initial_amount}"
+            )
+    
+    # 如果是平仓单，按实际成交数量更新仓位和收益
+    if is_close_side_order and filled_amount > 0:
+        actual_filled = min(filled_amount, GRID_CONFIG["GRID_AMOUNT"])
+        trading_state.available_position_size = round(
+            trading_state.available_position_size - actual_filled,
+            2,
+        )
+        
+        once_profit = (
+            trading_state.base_grid_single_price * actual_filled
+        )
+        trading_state.active_profit += once_profit
+        trading_state.total_profit += once_profit
+        trading_state.available_reduce_profit += once_profit
+        
+        logger.info(
+            f"处理消失的平仓单: 订单ID={order_id}, 实际成交={actual_filled}, "
+            f"仓位减少={actual_filled}, 收益={once_profit}"
+        )
+        
+        # 触发补单逻辑
+        from .grid_replenish import replenish_grid
+        await replenish_grid(True, float(price))

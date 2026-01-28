@@ -349,7 +349,11 @@ def convert_nado_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
         status_mapping = {
             'open': 'open',
             'filled': 'closed',
+            'partially_filled': 'open',  # 部分成交仍视为 open，但会通过 filled/remaining 字段判断
+            'partially filled': 'open',
+            'Partially Filled': 'open',
             'canceled': 'canceled',
+            'cancelled': 'canceled',
             'expired': 'expired',
             'rejected': 'rejected'
         }
