@@ -86,6 +86,9 @@ async def replenish_grid(filled_signal: bool, trade_price: float = 0.0):
         # 大间距补单
         await _over_range_replenish_order()
 
+        # 开仓侧补充不少于配置单的数量
+        await _replenish_config_open_orders()
+
         # 平仓侧补充不少于配置单的数量
         if trading_state.available_position_size > 0:
             await _replenish_config_close_orders()
@@ -596,6 +599,72 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
         else:
             trading_state.buy_orders[order_id] = new_price
         logger.info(f"大间距平仓补单成功: {order_id}, {new_price}")
+
+
+async def _replenish_config_open_orders():
+    """
+    开仓侧补充不少于配置单的数量
+    
+    只向远距离补单。
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    if trading_state.grid_pause:
+        return
+    
+    while (
+        trading_state.open_orders_count < GRID_CONFIG["GRID_COUNT"]
+        and trading_state.open_orders_count < GRID_CONFIG["MAX_TOTAL_ORDERS"]
+    ):
+        # 计算最远的开仓价格
+        furthest_open_price = None
+        if trading_state.open_orders_count > 0:
+            if not OPEN_SIDE_IS_ASK:  # 做多
+                furthest_open_price = min(trading_state.open_orders.values())
+            else:  # 做空
+                furthest_open_price = max(trading_state.open_orders.values())
+        
+        if furthest_open_price is None:
+            # 基于当前价格计算
+            multiplier = -1 if not OPEN_SIDE_IS_ASK else 1
+            furthest_open_price = trading_state.current_price + (
+                trading_state.active_grid_signle_price * multiplier
+            )
+        
+        multiplier = -1 if not OPEN_SIDE_IS_ASK else 1
+        new_price = round(
+            furthest_open_price + (trading_state.active_grid_signle_price * multiplier),
+            2,
+        )
+        
+        # 有效性检查
+        if not OPEN_SIDE_IS_ASK:  # 做多：买单价格必须 < 当前价格
+            while new_price >= trading_state.current_price:
+                new_price = round(
+                    new_price - trading_state.active_grid_signle_price, 2
+                )
+        else:  # 做空：卖单价格必须 > 当前价格
+            while new_price <= trading_state.current_price:
+                new_price = round(
+                    new_price + trading_state.active_grid_signle_price, 2
+                )
+        
+        success, order_id = await trading_state.grid_trading.place_single_order(
+            is_ask=OPEN_SIDE_IS_ASK,
+            price=new_price,
+            amount=GRID_CONFIG["GRID_AMOUNT"],
+        )
+        if success:
+            if OPEN_SIDE_IS_ASK:
+                trading_state.sell_orders[order_id] = new_price
+            else:
+                trading_state.buy_orders[order_id] = new_price
+            logger.info(f"补充开仓单成功: {order_id}, 价格={new_price}")
+        else:
+            logger.error(f"补充开仓单失败，退出循环。价格={new_price}")
+            break
 
 
 async def _replenish_config_close_orders():
