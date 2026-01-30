@@ -112,7 +112,10 @@ async def _on_open_side_filled(trade_price: float = 0.0):
         return
 
     logger.info("开仓侧被吃单补单")
-    orders = []
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
+    open_orders = []
+    close_order = None
 
     # 1. 补充开仓单 (继续建仓)
     if (
@@ -121,32 +124,59 @@ async def _on_open_side_filled(trade_price: float = 0.0):
     ):
         new_open_order = await _calc_next_open_side_open_order()
         if new_open_order:
-            orders.append(new_open_order)
+            open_orders.append(new_open_order)
 
-    # 2. 补充平仓单 (配对止盈单)
+    # 2. 补充平仓单 (配对止盈单)：买单成交后必须挂出对应卖单
     new_close_order = await _calc_next_open_side_close_order(trade_price)
     if new_close_order:
-        orders.append(new_close_order)
+        close_order = new_close_order
     else:
-        # 如果平仓单不符合补单条件，取消本次双侧补单
-        return
+        # 计算失败时仍用成交价+步长挂出配对平仓单，确保开仓成交必有止盈单
+        step = trading_state.base_grid_single_price
+        if not OPEN_SIDE_IS_ASK:  # 做多：卖单价格 = 成交价 + 步长
+            close_price = round(trade_price + step, 2)
+            close_order = (CLOSE_SIDE_IS_ASK, close_price, GRID_CONFIG["GRID_AMOUNT"])
+        else:  # 做空：买单价格 = 成交价 - 步长
+            close_price = round(trade_price - step, 2)
+            close_order = (CLOSE_SIDE_IS_ASK, close_price, GRID_CONFIG["GRID_AMOUNT"])
+        logger.info(f"开仓侧成交后使用 fallback 挂出配对平仓单: 价格={close_order[1]}")
 
-    if orders:
-        success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
+    all_order_ids = []
+
+    # 先下开仓单（不使用 reduce_only）
+    if open_orders:
+        success, order_ids = await trading_state.grid_trading.place_multi_orders(open_orders)
         if success:
             for idx, oid in enumerate(order_ids):
-                is_ask, price, _ = orders[idx]
+                is_ask, price, _ = open_orders[idx]
                 if is_ask:
                     trading_state.sell_orders[oid] = price
                 else:
                     trading_state.buy_orders[oid] = price
+            all_order_ids.extend(order_ids)
+        else:
+            logger.error("开仓侧补充开仓单失败")
+
+    # 再下配对平仓单（使用 reduce_only=True）
+    if close_order:
+        is_ask, price, amount = close_order
+        success, order_id = await trading_state.grid_trading.place_single_order(
+            is_ask=is_ask,
+            price=price,
+            amount=amount,
+            reduce_only=True,
+        )
+        if success:
+            if is_ask:
+                trading_state.sell_orders[order_id] = price
+            else:
+                trading_state.buy_orders[order_id] = price
+            all_order_ids.append(order_id)
             logger.info(
-                f"开仓侧被吃单补充订单成功: "
-                f"{[('卖单' if is_ask else '买单', price) for is_ask, price, _ in orders]}, "
-                f"订单ID={order_ids}"
+                f"开仓侧被吃单补充订单成功: 开仓单={len(open_orders)}, 配对平仓单=1, 订单ID={all_order_ids}"
             )
         else:
-            logger.error("开仓侧补充订单 place_multi_orders 失败")
+            logger.error(f"开仓侧补充配对平仓单失败: is_ask={is_ask}, price={price}")
 
 
 async def _calc_next_open_side_open_order() -> Optional[Tuple[bool, float, float]]:
@@ -288,14 +318,29 @@ async def _calc_next_open_side_close_order(
         )
 
     # 6. 当前价格安全检查
-    # 做多: 平仓价格 (卖) 必须 > 当前价格
-    # 做空: 平仓价格 (买) 必须 < 当前价格
+    # 做多: 平仓价格 (卖) 应 > 当前价格；若略低仍挂出，确保买单成交后必有对应卖单
+    # 做空: 平仓价格 (买) 应 < 当前价格；若略高仍挂出，确保卖单成交后必有对应买单
 
     if not OPEN_SIDE_IS_ASK:  # 做多
         if trading_state.current_price < new_close_price:
             return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
+        # 放宽：当前价略高于计算卖价时，仍用成交价+步长挂出卖单，保证买单成交必有配对卖单
+        if trade_price > 0:
+            fallback_price = round(
+                trade_price + trading_state.base_grid_single_price, 2
+            )
+            if fallback_price > trading_state.current_price:
+                return (CLOSE_SIDE_IS_ASK, fallback_price, GRID_CONFIG["GRID_AMOUNT"])
+            return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
     else:  # 做空
         if trading_state.current_price > new_close_price:
+            return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
+        if trade_price > 0:
+            fallback_price = round(
+                trade_price - trading_state.base_grid_single_price, 2
+            )
+            if fallback_price < trading_state.current_price:
+                return (CLOSE_SIDE_IS_ASK, fallback_price, GRID_CONFIG["GRID_AMOUNT"])
             return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
 
     return None
