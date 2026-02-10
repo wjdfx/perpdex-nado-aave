@@ -268,26 +268,10 @@ async def check_current_orders():
 
     # 交易暂停清理
     if trading_state.grid_pause:
-        # 风控暂停时：
-        # 1. 取消所有开仓单（停止继续建仓）
-        # 2. 保留普通网格的平仓单（让已成交的买单能够正常止盈）
-        # 3. 占位订单由 _save_pause_position() 统一管理
-
-        cancel_orders = []
-
-        # 取消开仓侧订单（做多=买单，做空=卖单）
-        for order_id in trading_state.open_orders.keys():
-            cancel_orders.append(order_id)
-
-        # 保留平仓侧的普通网格订单，只检查并处理重复
-        # 不取消平仓订单，让它们继续止盈
-        logger.info(
-            f"风控暂停：保留 {len(trading_state.close_orders)} 个平仓订单，"
-            f"取消 {len(cancel_orders)} 个开仓订单"
-        )
-
-        if cancel_orders:
-            await _cancel_orders(cancel_orders)
+        if len(trading_state.buy_orders) > 0:
+            await _cancel_orders(list(trading_state.buy_orders.keys()))
+        if len(trading_state.sell_orders) > 0:
+            await _cancel_orders(list(trading_state.sell_orders.keys()))
 
     # 检查重复订单
     await _check_duplicate_orders(trading_state.buy_orders)
@@ -339,6 +323,13 @@ async def _sync_current_orders():
     """
     同步订单状态（通过 REST API 核对当前订单列表）
     检测订单消失并处理部分成交的情况
+
+    重要说明：
+    - 占位订单（pause_orders）是熔断时用于回本的订单
+    - 占位订单不计入 buy_orders/sell_orders（活跃订单）
+    - 占位订单只存在于 pause_orders 和 pause_positions 中
+    - close_orders_count = len(close_orders) 不包含占位订单
+    - 这样确保占位订单不影响网格交易的活跃订单计数
     """
     trading_state = grid_state.trading_state
     GRID_CONFIG = grid_state.GRID_CONFIG
@@ -359,6 +350,8 @@ async def _sync_current_orders():
         else []
     )
 
+    # buy_orders/sell_orders：活跃的网格交易订单
+    # pause_orders：熔断占位订单（不计入活跃订单）
     buy_orders = {}
     sell_orders = {}
     trading_state.pause_orders = {}
@@ -408,6 +401,8 @@ async def _sync_current_orders():
 
         if is_close_side_order and initial_base_amount > GRID_CONFIG["GRID_AMOUNT"]:
             # 非网格订单，记录为熔断占位订单 (仅平仓方向且数量大于网格单量)
+            # 占位订单用于熔断时的回本卖出，不计入网格交易活跃订单
+            # 这确保 close_orders_count 不包含占位订单
             # 如果是部分成交的订单，amount 字段可能表示剩余数量
             # 我们需要检查是否之前存在这个订单，如果存在则使用原始数量
             pause_amount = initial_base_amount
@@ -435,6 +430,8 @@ async def _sync_current_orders():
                 "amount": pause_amount,
             }
             logger.info(f"同步发现占位订单: ID={order_id}, 价格={price}, 数量={pause_amount}")
+            # ← 重要：continue 确保占位订单不计入 buy_orders/sell_orders
+            # 占位订单只存在于 pause_orders 中，不影响 close_orders_count 计算
             continue
 
         if is_ask:
