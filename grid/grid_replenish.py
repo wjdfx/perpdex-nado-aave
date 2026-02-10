@@ -728,10 +728,10 @@ async def _replenish_config_close_orders():
     )
 
     while (
-        trading_state.close_orders_count < GRID_CONFIG["GRID_COUNT"]
-        and trading_state.available_position_size
+        trading_state.available_position_size
         > trading_state.close_orders_count * GRID_CONFIG["GRID_AMOUNT"]
         and trading_state.close_orders_count < available_close_orders_count
+        and trading_state.close_orders_count < GRID_CONFIG["MAX_TOTAL_ORDERS"]
     ):
         # 计算最远的平仓价格
         furthest_close_price = None
