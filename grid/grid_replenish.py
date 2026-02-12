@@ -723,14 +723,13 @@ async def _replenish_config_close_orders():
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
     
-    available_close_orders_count = (
-        trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"]
+    # 使用可承载的“整数平仓单数量”作为上限，避免浮点边界导致反复补/删同一档位订单。
+    max_close_orders_by_position = int(
+        (trading_state.available_position_size + 1e-9) / GRID_CONFIG["GRID_AMOUNT"]
     )
 
     while (
-        trading_state.available_position_size
-        > trading_state.close_orders_count * GRID_CONFIG["GRID_AMOUNT"]
-        and trading_state.close_orders_count < available_close_orders_count
+        trading_state.close_orders_count < max_close_orders_by_position
         and trading_state.close_orders_count < GRID_CONFIG["MAX_TOTAL_ORDERS"]
     ):
         # 计算最远的平仓价格
