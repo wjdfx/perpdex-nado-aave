@@ -474,7 +474,6 @@ if __name__ == "__main__":
         "GRID_SPREAD": 0.1,
         "MAX_TOTAL_ORDERS": 20,
         "ALER_POSITION": 1.0,
-        "DECREASE_POSITION": 2.0,
         "MAX_POSITION": 5.0,
         "ATR_THRESHOLD": 5.0,
         "DIRECTION": "LONG",  # 或 "SHORT"

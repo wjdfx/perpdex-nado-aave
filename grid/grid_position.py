@@ -172,18 +172,14 @@ async def check_position_limits(position_size: float):
     )
 
     alert_pos = GRID_CONFIG["ALER_POSITION"]
-    decrease_position = GRID_CONFIG["DECREASE_POSITION"]
 
     if position_size == 0:
         return
 
     # 当仓位到了警戒线时，触发挂单倾斜，将单边挂单网格距离增大
-    if position_size >= alert_pos and position_size < decrease_position:
+    if position_size >= alert_pos:
         trading_state.grid_open_spread_alert = True
         trading_state.grid_decrease_status = False
-    elif position_size >= decrease_position:
-        trading_state.grid_open_spread_alert = True
-        trading_state.grid_decrease_status = True
     else:
         trading_state.grid_open_spread_alert = False
         trading_state.grid_close_spread_alert = False

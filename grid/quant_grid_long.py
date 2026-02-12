@@ -366,13 +366,12 @@ async def check_position_limits(position_size: float):
     )
 
     alert_pos = GRID_CONFIG["ALER_POSITION"]
-    decrease_position = GRID_CONFIG["DECREASE_POSITION"]
     # direction = "多头" if sign > 0 else "空头"
     # logger.info(f"📊 当前仓位: {position_size}, 方向: {direction}")
     if position_size == 0:
         return
     # 当仓位到了警戒线时，触发挂单倾斜，将单边挂单网格距离增大
-    if position_size >= alert_pos and position_size < decrease_position:
+    if position_size >= alert_pos:
         # logger.warning(
         #     f"⚠️ 警告：仓位接近限制，已触发挂单倾斜: 市场={market_id}, 当前={position_size}, 警告={alert_pos}"
         # )
@@ -384,9 +383,6 @@ async def check_position_limits(position_size: float):
         #     - trading_state.original_buy_prices[0]
         # ) * 2
         trading_state.grid_decrease_status = False
-    elif position_size >= decrease_position:
-        trading_state.grid_buy_spread_alert = True
-        trading_state.grid_decrease_status = True
     else:
         trading_state.grid_buy_spread_alert = False
         trading_state.grid_sell_spread_alert = False

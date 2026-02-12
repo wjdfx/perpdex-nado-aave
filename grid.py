@@ -30,7 +30,6 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "GRID_SPREAD": float(os.getenv('GRID_SPREAD', 0.05)),  # 单网格价差（百分比）
         "MAX_TOTAL_ORDERS": int(os.getenv('MAX_TOTAL_ORDERS', 10)),  # 最大活跃订单数量
         "MAX_POSITION": float(os.getenv('MAX_POSITION', 1.0)),  # 最大仓位限制
-        "DECREASE_POSITION": float(os.getenv('DECREASE_POSITION', 0.35)),  # 降低仓位触发点
         "ALER_POSITION": float(os.getenv('ALER_POSITION', 0.3)),  # 警告仓位限制
         "MARKET_ID": int(os.getenv('MARKET_ID', 0)),  # 市场ID
         "ATR_THRESHOLD": int(os.getenv('ATR_THRESHOLD', 7)),  # ATR波动阈值
