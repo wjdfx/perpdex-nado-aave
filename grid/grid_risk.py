@@ -71,6 +71,8 @@ async def _risk_check(start: bool = False):
     if (
         trading_state.grid_pause
         and trading_state.available_position_size > GRID_CONFIG["GRID_AMOUNT"]
+        and not trading_state.pause_position_exist
+        and not trading_state.placing_pause_order
     ):
         # 已经熔断状态下如果还有可用仓位，下占位单
         logger.info(f"开始创建占位订单。。。。。。。。。。。。")
@@ -254,15 +256,20 @@ async def _save_pause_position():
             total_position / grid_amount * pause_grid_step
         )
 
-        # 成本价（回本价格）：最后交易价格 +/- 距离差价/2
+        # 成本价（回本价格）：基准价格 +/- 距离差价/2
         # multiplier: 做多时为1（卖出价格需要更高），做空时为-1（买入价格需要更低）
         multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-        
-        if trading_state.last_trade_price <= 0:
+
+        # 重启后可能没有 last_trade_price，回退使用 current_price 以确保占位单可创建
+        ref_price = trading_state.last_trade_price if trading_state.last_trade_price > 0 else trading_state.current_price
+        if ref_price is None or ref_price <= 0:
+            logger.warning(
+                "创建占位订单跳过：缺少有效价格基准（last_trade_price/current_price 均不可用）"
+            )
             return
-            
+
         # 计算回本价格
-        breakeven_price = trading_state.last_trade_price + (position_price_range / 2 * multiplier)
+        breakeven_price = ref_price + (position_price_range / 2 * multiplier)
 
         # 判断是否需要拆分订单
         if total_position > grid_amount * 4:
@@ -300,7 +307,7 @@ async def _save_pause_position():
             # 做多(卖单): 最低价必须 > 当前价
             # 做空(买单): 最高价必须 < 当前价
             # -----------------------------------------------------------
-            current_price = trading_state.last_trade_price
+            current_price = ref_price
             safe_buffer = pause_grid_step * 0.5 # 安全缓冲距离
             
             if not OPEN_SIDE_IS_ASK: # 做多
@@ -323,7 +330,7 @@ async def _save_pause_position():
             # 不需要拆分，单个订单
             # 同样应用价格检查
             final_price = breakeven_price
-            current_price = trading_state.last_trade_price
+            current_price = ref_price
             safe_buffer = pause_grid_step * 0.5
 
             if not OPEN_SIDE_IS_ASK: # 做多
