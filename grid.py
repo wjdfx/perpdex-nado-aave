@@ -28,7 +28,7 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "MAX_POSITION": float(os.getenv('MAX_POSITION', 1.0)),  # 最大仓位限制
         "ALER_POSITION": float(os.getenv('ALER_POSITION', 0.3)),  # 警告仓位限制
         "MARKET_ID": int(os.getenv('MARKET_ID', 0)),  # 市场ID
-        "ATR_THRESHOLD": int(os.getenv('ATR_THRESHOLD', 7)),  # ATR波动阈值
+        "ATR_THRESHOLD": float(os.getenv('ATR_THRESHOLD', 0.8)),  # ATR波动阈值
     }
     
     return {"nado": common_config.copy()}
