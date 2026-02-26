@@ -612,9 +612,13 @@ class NadoAdapter(ExchangeInterface):
                     logger.warning(f"No digest found for order_id {order_id}")
 
             if not digests:
-                # Try to cancel all orders for the product
-                logger.info("No digests found, cancelling all orders for product")
-                return await self._cancel_product_orders()
+                # Do not fallback to product-wide cancellation when digest mapping is missing.
+                # A broad cancel can wipe unrelated grid orders and desync local state.
+                logger.error(
+                    "cancel_grid_orders: no digests resolved for requested order_ids, "
+                    "skip cancellation to avoid product-wide cancel"
+                )
+                return False
 
             # Cancellation message
             cancel_message = {

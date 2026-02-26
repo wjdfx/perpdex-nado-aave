@@ -443,93 +443,36 @@ async def _sync_current_orders():
     disappeared_buy_orders = set(previous_buy_orders.keys()) - found_order_ids
     disappeared_sell_orders = set(previous_sell_orders.keys()) - found_order_ids
 
-    # 处理消失的订单（可能是部分成交后剩余部分被取消）
+    # 处理消失的订单（仅记录，不默认视为成交）
+    # 注意：在 Nado 上，订单可能因为取消/系统清理/连接抖动而从快照消失。
+    # 若直接按“成交”处理会导致仓位和收益被误记，并触发连锁补单。
     if disappeared_buy_orders or disappeared_sell_orders:
         logger.warning(
             f"检测到订单消失: 买单={len(disappeared_buy_orders)}, "
             f"卖单={len(disappeared_sell_orders)}"
         )
-        
-        # 处理消失的买单（视为成交，需要挂出对应卖单）
-        for order_id in disappeared_buy_orders:
-            price = previous_buy_orders.get(order_id)
-            if price is None:
-                continue
-            
-            # 假设订单完全成交（因为订单已消失）
-            # 如果订单只是部分成交，后续的订单更新消息会处理
-            filled_amount = GRID_CONFIG["GRID_AMOUNT"]
-            initial_amount = GRID_CONFIG["GRID_AMOUNT"]
-            
-            logger.info(
-                f"订单消失视为买单成交: ID={order_id}, 价格={price}, "
-                f"触发补单挂出对应卖单"
+        if disappeared_buy_orders:
+            prices = [
+                previous_buy_orders[oid]
+                for oid in disappeared_buy_orders
+                if oid in previous_buy_orders
+            ]
+            logger.warning(
+                "消失买单仅同步移除，不视为成交。IDs=%s, prices=%s",
+                sorted(disappeared_buy_orders),
+                prices,
             )
-            
-            # 更新状态
-            trading_state.available_position_size = round(
-                trading_state.available_position_size + filled_amount,
-                2,
+        if disappeared_sell_orders:
+            prices = [
+                previous_sell_orders[oid]
+                for oid in disappeared_sell_orders
+                if oid in previous_sell_orders
+            ]
+            logger.warning(
+                "消失卖单仅同步移除，不视为成交。IDs=%s, prices=%s",
+                sorted(disappeared_sell_orders),
+                prices,
             )
-            trading_state.last_filled_order_is_close_side = False
-            trading_state.last_trade_price = float(price)
-            trading_state.filled_count += 1
-            
-            # 触发补单逻辑，挂出对应的卖单
-            from .grid_replenish import replenish_grid
-            await replenish_grid(True, float(price))
-        
-        # 处理消失的卖单（视为成交，需要更新仓位和收益）
-        for order_id in disappeared_sell_orders:
-            price = previous_sell_orders.get(order_id)
-            if price is None:
-                continue
-            
-            # 检查是否在最近15秒内已经处理过相同价格的补单（避免重复处理）
-            recent_replenish_key = f"sell_{price}"
-            if (
-                trading_state.last_replenish_time
-                and time.time() - trading_state.last_replenish_time < 15
-                and hasattr(trading_state, "_last_replenish_key")
-                and trading_state._last_replenish_key == recent_replenish_key
-            ):
-                logger.info(
-                    f"订单消失视为卖单成交: ID={order_id}, 价格={price}, "
-                    f"但最近已处理过相同价格的补单，跳过避免重复"
-                )
-                continue
-            
-            # 假设订单完全成交
-            filled_amount = GRID_CONFIG["GRID_AMOUNT"]
-            initial_amount = GRID_CONFIG["GRID_AMOUNT"]
-            
-            # 更新仓位和收益
-            trading_state.available_position_size = round(
-                trading_state.available_position_size - filled_amount,
-                2,
-            )
-            trading_state.last_filled_order_is_close_side = True
-            trading_state.last_trade_price = float(price)
-            trading_state.filled_count += 1
-            
-            once_profit = (
-                trading_state.base_grid_single_price * filled_amount
-            )
-            trading_state.active_profit += once_profit
-            trading_state.total_profit += once_profit
-            trading_state.available_reduce_profit += once_profit
-            
-            logger.info(
-                f"订单消失视为卖单成交: ID={order_id}, 价格={price}, "
-                f"收益={once_profit}, 触发补单"
-            )
-            
-            # 记录补单键，避免重复处理
-            trading_state._last_replenish_key = recent_replenish_key
-            
-            # 触发补单逻辑
-            from .grid_replenish import replenish_grid
-            await replenish_grid(True, float(price))
 
     # 检查 pause_position_exist 标志
     if len(trading_state.pause_orders) > 0:

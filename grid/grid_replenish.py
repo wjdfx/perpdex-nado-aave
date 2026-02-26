@@ -722,6 +722,7 @@ async def _replenish_config_close_orders():
     GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
+    max_distance_pct = float(GRID_CONFIG["CLOSE_ORDER_MAX_DISTANCE_PCT"])
     
     # 使用可承载的“整数平仓单数量”作为上限，避免浮点边界导致反复补/删同一档位订单。
     max_close_orders_by_position = int(
@@ -776,6 +777,21 @@ async def _replenish_config_close_orders():
                 new_price = round(
                     new_price - trading_state.active_grid_signle_price, 2
                 )
+
+        # 防止异常状态下平仓单被补到离当前价过远的位置。
+        current_price = float(trading_state.current_price or 0.0)
+        if current_price > 0:
+            max_distance = current_price * (max_distance_pct / 100.0)
+            distance = abs(new_price - current_price)
+            if distance > max_distance:
+                logger.warning(
+                    "平仓补单价格超出最大偏离限制，停止补单。new_price=%s current=%s distance=%s max=%s",
+                    new_price,
+                    current_price,
+                    round(distance, 6),
+                    round(max_distance, 6),
+                )
+                break
 
         success, order_id = await trading_state.grid_trading.place_single_order(
             is_ask=CLOSE_SIDE_IS_ASK,
