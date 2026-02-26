@@ -11,6 +11,7 @@ import logging
 import os
 import time
 import random
+import re
 from typing import List, Tuple, Dict, Callable, Any, Optional
 from decimal import Decimal
 
@@ -130,6 +131,7 @@ class NadoAdapter(ExchangeInterface):
         self.price_increment: float = 0.1  # Default: $0.1
         self.size_increment: float = 0.001  # Default: 0.001
         self.min_size: float = 100.0  # Default: $100 notional
+        self._price_sanity_warned: bool = False
 
         logger.info(
             f"Nado Adapter initialized with env={self.env}, "
@@ -145,28 +147,58 @@ class NadoAdapter(ExchangeInterface):
                 return value
         return ""
 
-    def _resolve_product_id_by_symbol(self, perp_products: List[Dict[str, Any]]) -> Optional[int]:
-        """Resolve product_id by target symbol (prefer exact match, then fuzzy AAVE match)."""
-        target = self.target_symbol.upper()
-        target_token = target.split("-")[0]
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        return re.sub(r"[^A-Z0-9]", "", symbol.upper())
 
-        exact_match_id = None
-        fuzzy_match_id = None
+    def _resolve_product_id_by_symbol(self, perp_products: List[Dict[str, Any]]) -> Optional[int]:
+        """Resolve product_id by symbol with strict matching to avoid wrong market selection."""
+        target = self.target_symbol.upper().strip()
+        target_norm = self._normalize_symbol(target)
+        target_token = re.split(r"[-_/]", target)[0] if target else ""
+        exact_matches: List[Tuple[int, str]] = []
+        token_perp_matches: List[Tuple[int, str]] = []
 
         for product in perp_products:
             product_id = product.get("product_id")
+            if product_id is None:
+                continue
             symbol = self._extract_product_symbol(product)
             if not symbol:
                 symbol = self.PRODUCT_ID_TO_SYMBOL.get(product_id, "")
-            normalized = symbol.upper()
+            normalized = self._normalize_symbol(symbol)
 
-            if normalized == target:
-                exact_match_id = product_id
-                break
-            if target_token in normalized and fuzzy_match_id is None:
-                fuzzy_match_id = product_id
+            if normalized == target_norm:
+                exact_matches.append((product_id, symbol))
+            if target_token and target_token in normalized and "PERP" in normalized:
+                token_perp_matches.append((product_id, symbol))
 
-        return exact_match_id if exact_match_id is not None else fuzzy_match_id
+        if len(exact_matches) == 1:
+            return exact_matches[0][0]
+        if len(exact_matches) > 1:
+            logger.error(
+                "Multiple exact product matches for %s: %s",
+                self.target_symbol,
+                exact_matches,
+            )
+            return None
+
+        if len(token_perp_matches) == 1:
+            logger.warning(
+                "No exact symbol match for %s, fallback to token-perp match: %s",
+                self.target_symbol,
+                token_perp_matches[0],
+            )
+            return token_perp_matches[0][0]
+        if len(token_perp_matches) > 1:
+            logger.error(
+                "Ambiguous token-perp matches for %s: %s. Set NADO_PRODUCT_ID explicitly.",
+                self.target_symbol,
+                token_perp_matches,
+            )
+            return None
+
+        return None
 
     def _get_sender_bytes32(self) -> str:
         """
@@ -985,6 +1017,21 @@ class NadoAdapter(ExchangeInterface):
                 mark_price = (bid + ask) / 2 if bid and ask else bid or ask
                 
                 if mark_price > 0:
+                    if (
+                        not self._price_sanity_warned
+                        and self.target_symbol.upper().startswith("AAVE")
+                        and mark_price < 10
+                    ):
+                        self._price_sanity_warned = True
+                        logger.warning(
+                            "Market price sanity warning: symbol=%s product_id=%s mark_price=%s bid_x18=%s ask_x18=%s. "
+                            "This may indicate wrong product_id; consider setting NADO_PRODUCT_ID explicitly.",
+                            self.PRODUCT_ID_TO_SYMBOL.get(self.product_id, self.target_symbol),
+                            self.product_id,
+                            mark_price,
+                            bid_x18,
+                            ask_x18,
+                        )
                     stats = {
                         'mark_price': mark_price,
                         'best_bid': bid,
@@ -1085,8 +1132,8 @@ class NadoAdapter(ExchangeInterface):
         """Handle market stats updates from WebSocket."""
         if 'market_stats' in self.callbacks and self.callbacks['market_stats']:
             # WebSocket best_bid_offer stream returns bid_x18 and ask_x18
-            bid_x18 = data.get('bid_x18', data.get('best_bid', '0'))
-            ask_x18 = data.get('ask_x18', data.get('best_ask', '0'))
+            bid_x18 = data.get('bid_x18', data.get('bid_price', data.get('best_bid', '0')))
+            ask_x18 = data.get('ask_x18', data.get('ask_price', data.get('best_ask', '0')))
             
             bid = self._from_x18(int(bid_x18)) if bid_x18 else 0
             ask = self._from_x18(int(ask_x18)) if ask_x18 else 0
@@ -1367,7 +1414,10 @@ class NadoAdapter(ExchangeInterface):
                     min_size = int(book_info.get('min_size', '100000000000000000000'))
                     self.min_size = self._from_x18(min_size)
                     
-                    logger.info(f"Fetched product {self.product_id} params: price_inc={self.price_increment}, size_inc={self.size_increment}, min_size={self.min_size}")
+                    logger.info(
+                        f"Fetched product {self.product_id} ({self.PRODUCT_ID_TO_SYMBOL.get(self.product_id, 'UNKNOWN')}) "
+                        f"params: price_inc={self.price_increment}, size_inc={self.size_increment}, min_size={self.min_size}"
+                    )
                     return
 
             logger.warning(f"Product {self.product_id} not found in perp_products")
