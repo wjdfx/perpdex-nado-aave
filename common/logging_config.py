@@ -45,20 +45,5 @@ def setup_logging(log_name: str = "quant"):
     console_handler.setFormatter(formatter)
     logging.root.addHandler(console_handler)
 
-    # 屏蔽SDK日志输出
-    # 设置GRVT SDK logger级别为WARNING，只显示警告和错误
-    grvt_logger = logging.getLogger('pysdk')
-    grvt_logger.setLevel(logging.WARNING)
-    
-    # 由于grvt_ccxt_utils.py直接使用logging.info()，我们需要添加一个过滤器来屏蔽这些日志
-    # 但不影响其他模块的日志输出
-    class GrvtFilter(logging.Filter):
-        def filter(self, record):
-            # 屏蔽来自grvt_ccxt_utils.py的INFO级别日志
-            if record.levelno == logging.INFO and 'grvt_ccxt_utils.py' in record.pathname:
-                return False
-            return True
-    
-    # 将过滤器添加到所有处理器
-    for handler in logging.root.handlers:
-        handler.addFilter(GrvtFilter())
+    # 屏蔽第三方 SDK 噪音日志
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)

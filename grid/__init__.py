@@ -1,5 +1,5 @@
 """
-Lighter交易策略包
+Nado 网格交易策略包
 """
 
 from .strategy import (

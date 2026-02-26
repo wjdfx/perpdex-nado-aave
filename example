@@ -1,24 +1,28 @@
-# lighter configuration
-BASE_URL=https://mainnet.zklighter.elliot.ai
-L1_ADDRESS=''
-ACCOUNT_INDEX=''
-API_KEY_INDEX=''
-API_KEY_PRIVATE_KEY=''
+# nado configuration
+EXCHANGE_TYPE=nado
 
-# grvt configuration
-GRVT_PRIVATE_KEY = ''
-GRVT_API_KEY=''
-GRVT_TRADING_ACCOUNT_ID = ''
-GRVT_ENV = ''
+# nado account
+NADO_PRIVATE_KEY=''
+NADO_ENV=testnet
+NADO_SUBACCOUNT_NAME=default
 
-# Exchange configuration
-EXCHANGE_TYPE=lighter
+# optional: default symbol is AAVE-PERP
+NADO_SYMBOL=AAVE-PERP
+# optional: if set, use fixed product_id directly
+NADO_PRODUCT_ID=
 
-# Logging configuration
-LOG_LEVEL='INFO'
-LOG_FORMAT='%(asctime)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s'
-LOG_FILE_DIR=./logs
+# grid configuration
+DIRECTION=LONG
+MARKET_ID=0
+GRID_COUNT=3
+GRID_AMOUNT=0.01
+GRID_SPREAD=0.05
+MAX_TOTAL_ORDERS=10
+MAX_POSITION=1.0
+ALER_POSITION=0.3
+ATR_THRESHOLD=7
 
-# standx configuration
-STANDX_WALLET_ADDRESS=''
-STANDX_PRIVATE_KEY=''
+# logging configuration
+LOG_LEVEL=INFO
+LOG_FORMAT=%(asctime)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s
+LOG_DIR=./logs

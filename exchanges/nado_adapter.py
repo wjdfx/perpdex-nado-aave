@@ -34,9 +34,11 @@ class NadoAdapter(ExchangeInterface):
     Uses EIP712 signing with private key for authentication.
     """
 
+    TARGET_SYMBOL = os.getenv("NADO_SYMBOL", "AAVE-PERP")
+
     # Market ID to Nado product_id mapping
     MARKET_ID_TO_PRODUCT = {
-        0: 4,   # ETH-PERP (default)
+        0: None,  # Default resolved by symbol (AAVE-PERP)
         1: 2,   # BTC-PERP
         2: 8,   # SOL-PERP
         3: 10,  # XRP-PERP
@@ -48,8 +50,8 @@ class NadoAdapter(ExchangeInterface):
         0: "USDT0",
         1: "KBTC",
         2: "BTC-PERP",
-        3: "WETH",
-        4: "ETH-PERP",
+        3: "PRODUCT_3",
+        4: "PRODUCT_4",
         5: "USDC",
         8: "SOL-PERP",
         10: "XRP-PERP",
@@ -58,6 +60,7 @@ class NadoAdapter(ExchangeInterface):
         18: "ZEC-PERP",
         20: "MON-PERP",
         22: "FARTCOIN-PERP",
+        24: "AAVE-PERP",
     }
 
     def __init__(
@@ -67,7 +70,16 @@ class NadoAdapter(ExchangeInterface):
         subaccount_name: str = "default"
     ):
         self.market_id = market_id
-        self.product_id = product_id or self.MARKET_ID_TO_PRODUCT.get(market_id, 4)
+        self.target_symbol = self.TARGET_SYMBOL
+        env_product_id = os.getenv("NADO_PRODUCT_ID", "").strip()
+        env_product_id_int = int(env_product_id) if env_product_id.isdigit() else None
+        self.product_id = (
+            product_id
+            if product_id is not None
+            else env_product_id_int
+            if env_product_id_int is not None
+            else self.MARKET_ID_TO_PRODUCT.get(market_id)
+        )
         self.subaccount_name = subaccount_name
 
         # Load configuration from environment
@@ -119,7 +131,42 @@ class NadoAdapter(ExchangeInterface):
         self.size_increment: float = 0.001  # Default: 0.001
         self.min_size: float = 100.0  # Default: $100 notional
 
-        logger.info(f"Nado Adapter initialized with env={self.env}, product_id={self.product_id}")
+        logger.info(
+            f"Nado Adapter initialized with env={self.env}, "
+            f"target_symbol={self.target_symbol}, product_id={self.product_id}"
+        )
+
+    @staticmethod
+    def _extract_product_symbol(product: Dict[str, Any]) -> str:
+        """Extract a normalized symbol from a product payload."""
+        for key in ("symbol", "instrument", "name", "product_name", "display_name"):
+            value = product.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return ""
+
+    def _resolve_product_id_by_symbol(self, perp_products: List[Dict[str, Any]]) -> Optional[int]:
+        """Resolve product_id by target symbol (prefer exact match, then fuzzy AAVE match)."""
+        target = self.target_symbol.upper()
+        target_token = target.split("-")[0]
+
+        exact_match_id = None
+        fuzzy_match_id = None
+
+        for product in perp_products:
+            product_id = product.get("product_id")
+            symbol = self._extract_product_symbol(product)
+            if not symbol:
+                symbol = self.PRODUCT_ID_TO_SYMBOL.get(product_id, "")
+            normalized = symbol.upper()
+
+            if normalized == target:
+                exact_match_id = product_id
+                break
+            if target_token in normalized and fuzzy_match_id is None:
+                fuzzy_match_id = product_id
+
+        return exact_match_id if exact_match_id is not None else fuzzy_match_id
 
     def _get_sender_bytes32(self) -> str:
         """
@@ -694,7 +741,7 @@ class NadoAdapter(ExchangeInterface):
                 oracle_price = self._from_x18(int(product_info.get('oracle_price_x18', '0')))
 
                 if amount != 0:
-                    symbol = self.PRODUCT_ID_TO_SYMBOL.get(product_id, f"PRODUCT_{product_id}")
+                    symbol = self._extract_product_symbol(product_info) or self.PRODUCT_ID_TO_SYMBOL.get(product_id, f"PRODUCT_{product_id}")
                     positions[symbol] = {
                         'instrument': symbol,
                         'product_id': product_id,
@@ -749,6 +796,8 @@ class NadoAdapter(ExchangeInterface):
             granularity = resolution_map.get(resolution, 60)
 
             product_id = self.MARKET_ID_TO_PRODUCT.get(market_id, self.product_id)
+            if product_id is None:
+                product_id = self.product_id
 
             # Use archive API for candlesticks
             # Note: This would require the archive endpoint to be configured
@@ -1124,7 +1173,7 @@ class NadoAdapter(ExchangeInterface):
                 'id': client_order_id,  # Use client_order_id to match buy_orders/sell_orders
                 'clientOrderId': client_order_id,
                 'status': 'closed' if status == 'filled' else 'open',  # CCXT uses 'closed' for filled
-                'symbol': f'PRODUCT_{product_id}',
+                'symbol': self.PRODUCT_ID_TO_SYMBOL.get(product_id, f'PRODUCT_{product_id}'),
                 'side': 'buy' if is_bid else 'sell',
                 'price': price,
                 'amount': amount_float,
@@ -1251,6 +1300,11 @@ class NadoAdapter(ExchangeInterface):
 
             # Fetch product trading parameters
             await self._fetch_product_params()
+            if self.product_id is None:
+                raise ValueError(
+                    f"product_id is not set for target symbol {self.target_symbol}. "
+                    "Set NADO_PRODUCT_ID in .env."
+                )
 
             logger.info(f"Nado client initialized: env={self.env}, chain_id={self.chain_id}, endpoint={self.endpoint_address}")
             logger.info(f"Product {self.product_id} params: price_increment={self.price_increment}, size_increment={self.size_increment}, min_size={self.min_size}")
@@ -1276,7 +1330,29 @@ class NadoAdapter(ExchangeInterface):
             # Find our product in perp_products
             perp_products = data.get('perp_products', [])
             for product in perp_products:
+                pid = product.get("product_id")
+                symbol = self._extract_product_symbol(product)
+                if symbol and pid is not None:
+                    self.PRODUCT_ID_TO_SYMBOL[pid] = symbol
+
+            # If product_id is not explicitly provided, resolve it by target symbol
+            if self.product_id is None:
+                resolved = self._resolve_product_id_by_symbol(perp_products)
+                if resolved is None:
+                    raise ValueError(
+                        f"Cannot resolve product_id for target symbol '{self.target_symbol}'. "
+                        f"Please set NADO_PRODUCT_ID explicitly."
+                    )
+                self.product_id = resolved
+                logger.info(
+                    f"Resolved target symbol {self.target_symbol} to product_id={self.product_id}"
+                )
+
+            for product in perp_products:
                 if product.get('product_id') == self.product_id:
+                    symbol = self._extract_product_symbol(product)
+                    if symbol:
+                        self.PRODUCT_ID_TO_SYMBOL[self.product_id] = symbol
                     book_info = product.get('book_info', {})
                     
                     # price_increment_x18

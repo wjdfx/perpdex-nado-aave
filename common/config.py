@@ -8,18 +8,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# API配置
-BASE_URL = os.getenv('BASE_URL', "https://mainnet.zklighter.elliot.ai")  # 测试网地址
+# API配置（兼容保留）
+BASE_URL = os.getenv('BASE_URL', "https://gateway.test.nado.xyz/v1")
 
 # 交易所配置
-EXCHANGE_TYPE = os.getenv('EXCHANGE_TYPE', 'lighter')  # 交易所类型，默认 lighter
+EXCHANGE_TYPE = os.getenv('EXCHANGE_TYPE', 'nado')
 
-# 账户配置 - 使用示例账户信息
+# 兼容保留字段（Nado 不使用）
 L1_ADDRESS = os.getenv('L1_ADDRESS', '')
-ACCOUNT_INDEX = int(os.getenv('ACCOUNT_INDEX', ''))
-API_KEY_INDEX = int(os.getenv('API_KEY_INDEX', ''))
-
-# API密钥私钥（示例账户）
+ACCOUNT_INDEX = int(os.getenv('ACCOUNT_INDEX', '0'))
+API_KEY_INDEX = int(os.getenv('API_KEY_INDEX', '0'))
 API_KEY_PRIVATE_KEY = os.getenv('API_KEY_PRIVATE_KEY', '')
 
 # 日志配置
@@ -36,19 +34,6 @@ POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
 POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'yourpassword')
 POSTGRES_DB = os.getenv('POSTGRES_DB', 'mydb')
 
-# StandX Maker 策略配置
-STANDX_MAKER_SYMBOL = os.getenv('STANDX_MAKER_SYMBOL', 'BTC-USD')
-STANDX_MAKER_ORDER_DISTANCE_BPS = float(os.getenv('STANDX_MAKER_ORDER_DISTANCE_BPS', 8))
-STANDX_MAKER_CANCEL_DISTANCE_BPS = float(os.getenv('STANDX_MAKER_CANCEL_DISTANCE_BPS', 6))
-STANDX_MAKER_REBALANCE_DISTANCE_BPS = float(os.getenv('STANDX_MAKER_REBALANCE_DISTANCE_BPS', 10))
-STANDX_MAKER_ORDER_SIZE_BTC = float(os.getenv('STANDX_MAKER_ORDER_SIZE_BTC', 0.01))
-STANDX_MAKER_MAX_POSITION_BTC = float(os.getenv('STANDX_MAKER_MAX_POSITION_BTC', 0.02))
-STANDX_MAKER_MAX_ATR = float(os.getenv('STANDX_MAKER_MAX_ATR', 60))
-STANDX_MAKER_MAX_ORDERS_PER_SIDE = int(os.getenv('STANDX_MAKER_MAX_ORDERS_PER_SIDE', 2))
-STANDX_MAKER_SIDE_ORDER_GAP_BPS = float(os.getenv('STANDX_MAKER_SIDE_ORDER_GAP_BPS', 1))
-STANDX_MAKER_FIX_ORDER_ENABLED = os.getenv('STANDX_MAKER_FIX_ORDER_ENABLED', 'false').lower() == 'true'
-STANDX_MAKER_AUTO_CLOSE_POSITION = os.getenv('STANDX_MAKER_AUTO_CLOSE_POSITION', 'false').lower() == 'true'
-
 # 钉钉通知配置（webhook 为空时关闭通知）
 DINGTALK_WEBHOOK = os.getenv('DINGTALK_WEBHOOK', '')  # 完整的钉钉机器人 Webhook 地址
-DINGTALK_KEYWORD = os.getenv('DINGTALK_KEYWORD', 'Standx')  # 钉钉机器人关键词
+DINGTALK_KEYWORD = os.getenv('DINGTALK_KEYWORD', 'Nado')  # 钉钉机器人关键词

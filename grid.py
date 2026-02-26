@@ -1,4 +1,3 @@
-import grid.quant_grid_long as quant_grid_long
 import grid.quant_grid_universal as quant_grid_universal
 import asyncio
 import sys
@@ -12,9 +11,6 @@ load_dotenv()
 
 
 class ExchangeType(Enum):
-    LIGHTER = "lighter"
-    GRVT = "grvt"
-    STANDX = "standx"
     NADO = "nado"
 
 
@@ -35,13 +31,7 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "ATR_THRESHOLD": int(os.getenv('ATR_THRESHOLD', 7)),  # ATR波动阈值
     }
     
-    # Create configurations for all exchanges using the common config
-    return {
-        "lighter": common_config.copy(),
-        "grvt": common_config.copy(),
-        "standx": common_config.copy(),
-        "nado": common_config.copy()
-    }
+    return {"nado": common_config.copy()}
 
 
 # Load grid configurations from environment variables
@@ -63,7 +53,7 @@ def validate_exchange_type(exchange_type: str) -> str:
 if __name__ == "__main__":
     # Access arguments via sys.argv
     # sys.argv[0] is the script name, sys.argv[1:] are the actual arguments
-    exchange_type = os.getenv("EXCHANGE_TYPE", ExchangeType.LIGHTER.value)
+    exchange_type = os.getenv("EXCHANGE_TYPE", ExchangeType.NADO.value)
     # Validate the provided exchange type
     exchange_type = validate_exchange_type(exchange_type)
 
@@ -73,5 +63,4 @@ if __name__ == "__main__":
         print(f"Error: No grid configuration found for exchange type '{exchange_type}'")
         sys.exit(1)
 
-    # asyncio.run(quant_grid_long.run_grid_trading(exchange_type, grid_config))
     asyncio.run(quant_grid_universal.run_grid_trading(exchange_type, grid_config))

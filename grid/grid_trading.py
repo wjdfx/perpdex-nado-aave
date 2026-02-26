@@ -3,7 +3,6 @@ import logging
 import time
 import pandas as pd
 import aiohttp
-import lighter
 from typing import Any, Dict, List, Tuple, Optional
 from . import quota
 from common.config import BASE_URL
@@ -270,13 +269,13 @@ class GridTrading:
         """
         Convert market_id to Binance symbol.
         """
-        # Mapping from StandX market_id to Binance symbols
+        # Mapping from strategy market_id to Binance symbols used for risk candles
         market_id_to_binance = {
-            0: "ETHUSDT",  # ETH-USD -> ETHUSDT
-            1: "BTCUSDT",  # BTC-USD -> BTCUSDT
+            0: "AAVEUSDT",
+            1: "BTCUSDT",
             2: "SOLUSDT",  # SOL-USD -> SOLUSDT
         }
-        return market_id_to_binance.get(market_id, "BTCUSDT")
+        return market_id_to_binance.get(market_id, "AAVEUSDT")
     
     async def candle_stick(
         self,

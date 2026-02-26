@@ -1,30 +1,8 @@
-# lighter 项目依赖 (第三方库)
-git+https://github.com/elliottech/lighter-python.git@v1.0.2
-
-# 数据分析
 pandas
 numpy
-
-# WebSocket 支持
 websockets
 aiohttp
-# 环境变量支持
 python-dotenv
-
-# grvt
-grvt-pysdk
-
-# StandX 认证依赖
-pyjwt
-cryptography
-base58
 requests
 eth-account
-
-# Nado 依赖 (eth-account, aiohttp 已在上面列出)
-# 使用 EIP712 签名的依赖
-# eth-account (已包含)
-# aiohttp (已包含)
-
-#ccxt
 ccxt

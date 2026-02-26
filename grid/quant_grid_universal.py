@@ -253,7 +253,7 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         return False
 
 
-async def run_grid_trading(_exchange_type: str = "lighter", grid_config: dict = None):
+async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = None):
     """
     运行网格交易系统
     
@@ -290,13 +290,13 @@ async def run_grid_trading(_exchange_type: str = "lighter", grid_config: dict = 
         OPEN_SIDE_IS_ASK as OPEN_ASK,
     )
 
-    lighter_adapter = create_exchange_adapter(
+    exchange_adapter = create_exchange_adapter(
         exchange_type=_exchange_type, market_id=CONFIG["MARKET_ID"]
     )
-    if lighter_adapter is None:
+    if exchange_adapter is None:
         logger.exception("不支持的交易所类型")
         return
-    exchange = lighter_adapter
+    exchange = exchange_adapter
 
     await exchange.initialize_client()
     auth, err = await exchange.create_auth_token()
@@ -405,7 +405,9 @@ async def run_grid_trading(_exchange_type: str = "lighter", grid_config: dict = 
                 )
 
                 # 获取K线数据
-                cs_1m = await grid_trading.candle_stick(market_id=0, resolution="1m")
+                cs_1m = await grid_trading.candle_stick(
+                    market_id=CONFIG["MARKET_ID"], resolution="1m"
+                )
                 trading_state.candle_stick_1m = cs_1m
 
                 # 急跌/急涨 判断 (Rapid Market Move)
