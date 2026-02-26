@@ -179,6 +179,7 @@ class BinanceMarketData:
             List[Dict]: K线数据列表
         """
         endpoint = f"/api/v3/klines"
+        timeout = kwargs.pop("timeout", 15)
         params = {
             "symbol": symbol,
             "interval": interval,
@@ -187,7 +188,7 @@ class BinanceMarketData:
         }
         
         url = self.base_url + endpoint
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=timeout)
         
         if response.status_code != 200:
             raise Exception(f"Failed to fetch data: {response.status_code} - {response.text}")

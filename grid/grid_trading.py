@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+import asyncio
 import pandas as pd
 import aiohttp
 from typing import Any, Dict, List, Tuple, Optional
@@ -297,11 +298,13 @@ class GridTrading:
             from exchanges.common_market_data import BinanceMarketData
             binance_data = BinanceMarketData()
             
-            # Get klines from Binance
-            df = binance_data.get_klines_df(
+            # Run sync kline HTTP call in thread to avoid blocking event loop.
+            df = await asyncio.to_thread(
+                binance_data.get_klines_df,
                 symbol=binance_symbol,
                 interval=binance_interval,
-                limit=count_back
+                limit=count_back,
+                timeout=15,
             )
             
             # Rename columns to match expected format

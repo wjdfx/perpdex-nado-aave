@@ -332,7 +332,9 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                 await asyncio.sleep(10)
 
                 # 检查仓位状态
-                account_info = await exchange.get_account_info()
+                account_info = await asyncio.wait_for(
+                    exchange.get_account_info(), timeout=20
+                )
                 if not account_info:
                     logger.info("获取账户信息失败")
                     continue
@@ -405,8 +407,11 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                 )
 
                 # 获取K线数据
-                cs_1m = await grid_trading.candle_stick(
-                    market_id=CONFIG["MARKET_ID"], resolution="1m"
+                cs_1m = await asyncio.wait_for(
+                    grid_trading.candle_stick(
+                        market_id=CONFIG["MARKET_ID"], resolution="1m"
+                    ),
+                    timeout=20,
                 )
                 trading_state.candle_stick_1m = cs_1m
 
@@ -445,15 +450,17 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                 if counter % 6 == 0:
                     if trading_state.current_price and "details" in locals():
                         logger.info("波动检测: %s", details | {"result": is_rapid})
-                    await _risk_check()
+                    await asyncio.wait_for(_risk_check(), timeout=30)
 
                 # 补单
                 async with replenish_grid_lock:
                     if time.time() - trading_state.last_replenish_time > 5:
-                        await check_current_orders()
-                        await replenish_grid(False)
+                        await asyncio.wait_for(check_current_orders(), timeout=20)
+                        await asyncio.wait_for(replenish_grid(False), timeout=20)
 
                 counter += 1
+            except asyncio.TimeoutError:
+                logger.exception("执行循环检查超时，已跳过本轮")
             except Exception:
                 logger.exception("执行循环检查时出现异常")
 
