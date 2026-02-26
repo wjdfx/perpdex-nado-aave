@@ -35,11 +35,11 @@ class NadoAdapter(ExchangeInterface):
     Uses EIP712 signing with private key for authentication.
     """
 
-    TARGET_SYMBOL = os.getenv("NADO_SYMBOL", "AAVE-PERP")
+    TARGET_SYMBOL = os.getenv("NADO_SYMBOL", "AAVEUSDT0")
 
     # Market ID to Nado product_id mapping
     MARKET_ID_TO_PRODUCT = {
-        0: None,  # Default resolved by symbol (AAVE-PERP)
+        0: None,  # Default resolved by symbol (AAVEUSDT0)
         1: 2,   # BTC-PERP
         2: 8,   # SOL-PERP
         3: 10,  # XRP-PERP
@@ -61,7 +61,8 @@ class NadoAdapter(ExchangeInterface):
         18: "ZEC-PERP",
         20: "MON-PERP",
         22: "FARTCOIN-PERP",
-        24: "AAVE-PERP",
+        24: "PRODUCT_24",
+        26: "AAVEUSDT0",
     }
 
     def __init__(

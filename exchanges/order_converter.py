@@ -79,7 +79,7 @@ def convert_nado_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
 
         product_id = order.get('product_id', 0)
         product_symbol_map = {
-            24: 'AAVE-PERP',
+            26: 'AAVEUSDT0',
             2: 'BTC-PERP',
             8: 'SOL-PERP',
             10: 'XRP-PERP',
@@ -119,7 +119,7 @@ def convert_nado_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
             'id': order.get('digest', ''),
             'clientOrderId': str(order.get('nonce', '')),
             'status': 'unknown',
-            'symbol': 'AAVE-PERP',
+            'symbol': 'AAVEUSDT0',
             'side': 'buy',
             'price': 0,
             'amount': 0,
@@ -136,7 +136,7 @@ def convert_unknown_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
         'id': str(order.get('id', order.get('order_id', order.get('client_order_id', '')))),
         'clientOrderId': str(order.get('client_order_id', order.get('clientOrderId', ''))),
         'status': 'unknown',
-        'symbol': 'AAVE-PERP',
+        'symbol': 'AAVEUSDT0',
         'side': 'buy',
         'price': float(order.get('price', 0)),
         'amount': float(order.get('amount', order.get('size', 0))),

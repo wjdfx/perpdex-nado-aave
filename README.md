@@ -20,7 +20,7 @@ pip install -r requirements.txt
 - `MARKET_ID=0`
 - `NADO_PRIVATE_KEY=...`
 - `NADO_ENV=testnet` 或 `mainnet`
-- `NADO_SYMBOL=AAVE-PERP`
+- `NADO_SYMBOL=AAVEUSDT0`
 - `NADO_PRODUCT_ID=`（可留空，程序会在启动时自动按 `NADO_SYMBOL` 解析）
 
 3. 启动
@@ -32,5 +32,5 @@ python grid.py
 ## 说明
 
 - 程序仅支持 `nado`。
-- 默认交易标的是 `AAVE-PERP`。
+- 默认交易标的是 `AAVEUSDT0`（建议显式设置 `NADO_PRODUCT_ID=26`）。
 - 风控 K 线数据源默认使用 `AAVEUSDT`。

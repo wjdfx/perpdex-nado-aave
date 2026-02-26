@@ -6,8 +6,8 @@ NADO_PRIVATE_KEY=''
 NADO_ENV=testnet
 NADO_SUBACCOUNT_NAME=default
 
-# optional: default symbol is AAVE-PERP
-NADO_SYMBOL=AAVE-PERP
+# optional: default symbol is AAVEUSDT0
+NADO_SYMBOL=AAVEUSDT0
 # optional: if set, use fixed product_id directly
 NADO_PRODUCT_ID=
 
