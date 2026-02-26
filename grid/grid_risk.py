@@ -94,13 +94,20 @@ async def _check_adverse_trend(df: pd.DataFrame) -> Tuple[bool, Dict]:
         (是否触发, 详情字典)
     """
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    ema_period = int(GRID_CONFIG.get("ADVERSE_EMA_PERIOD", 20))
+    rsi_period = int(GRID_CONFIG.get("ADVERSE_RSI_PERIOD", 14))
+    adx_period = int(GRID_CONFIG.get("ADVERSE_ADX_PERIOD", 14))
+    adx_threshold = float(GRID_CONFIG.get("ADVERSE_ADX_THRESHOLD", 25))
+    rsi_long_threshold = float(GRID_CONFIG.get("ADVERSE_RSI_LONG_THRESHOLD", 50))
+    rsi_short_threshold = float(GRID_CONFIG.get("ADVERSE_RSI_SHORT_THRESHOLD", 50))
     
-    if df is None or len(df) < 20:
+    if df is None or len(df) < max(ema_period, rsi_period, adx_period):
         return False, {}
 
-    ema_series = quota.compute_ema(df, period=20)
-    rsi_series = quota.compute_rsi(df, period=14)
-    adx_series, pdi_series, mdi_series = quota.compute_adx(df, period=14)
+    ema_series = quota.compute_ema(df, period=ema_period)
+    rsi_series = quota.compute_rsi(df, period=rsi_period)
+    adx_series, pdi_series, mdi_series = quota.compute_adx(df, period=adx_period)
 
     ema_value = float(ema_series.iloc[-1])
     rsi_value = float(rsi_series.iloc[-1])
@@ -110,17 +117,17 @@ async def _check_adverse_trend(df: pd.DataFrame) -> Tuple[bool, Dict]:
     close_value = float(df["close"].iloc[-1])
 
     # 是否存在明确趋势
-    has_trend = adx_value > 25
+    has_trend = adx_value > adx_threshold
 
     if not OPEN_SIDE_IS_ASK:  # 做多策略：担心下跌趋势
         is_downtrend = close_value < ema_value
         is_bearish_adx = pdi_value < mdi_value
-        weak_rsi = rsi_value < 50
+        weak_rsi = rsi_value < rsi_long_threshold
         result = is_downtrend and has_trend and is_bearish_adx and weak_rsi
     else:  # 做空策略：担心上涨趋势
         is_uptrend = close_value > ema_value
         is_bullish_adx = pdi_value > mdi_value
-        strong_rsi = rsi_value > 50
+        strong_rsi = rsi_value > rsi_short_threshold
         result = is_uptrend and has_trend and is_bullish_adx and strong_rsi
 
     details = {
@@ -148,17 +155,19 @@ async def _check_ema_reversion(df: pd.DataFrame) -> Tuple[bool, Dict]:
         (是否触发, 详情字典)
     """
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    ema_period = int(GRID_CONFIG.get("EMA_REVERSION_PERIOD", 60))
+    threshold = float(GRID_CONFIG.get("EMA_REVERSION_THRESHOLD", 0.02))
     
-    if df is None or len(df) < 60:
+    if df is None or len(df) < ema_period:
         return False, {}
 
-    ema_60 = quota.compute_ema(df, period=60, column="close")
-    ema_value = float(ema_60.iloc[-1])
+    ema_series = quota.compute_ema(df, period=ema_period, column="close")
+    ema_value = float(ema_series.iloc[-1])
     current_price = float(df["close"].iloc[-1])
 
     distance = (current_price - ema_value) / ema_value
 
-    threshold = 0.02
     is_triggered = False
 
     if not OPEN_SIDE_IS_ASK:  # 做多
@@ -191,7 +200,9 @@ async def is_rapid_market_move(df: pd.DataFrame, close: float) -> Tuple[bool, Di
     if df is None:
         return False, {}
 
-    atr_series = quota.compute_atr(df, period=7)
+    atr_period = int(GRID_CONFIG.get("RAPID_MOVE_ATR_PERIOD", 7))
+    source_max_diff_pct = float(GRID_CONFIG.get("RAPID_MOVE_SOURCE_MAX_DIFF_PCT", 0.2))
+    atr_series = quota.compute_atr(df, period=atr_period)
     atr_value = float(atr_series.iloc[-1])
 
     open_val = float(df["open"].iloc[-1])
@@ -202,7 +213,7 @@ async def is_rapid_market_move(df: pd.DataFrame, close: float) -> Tuple[bool, Di
     source_diff_pct = (
         abs(realtime_close - kline_close) / kline_close if kline_close > 0 else 0.0
     )
-    use_realtime = source_diff_pct <= 0.2
+    use_realtime = source_diff_pct <= source_max_diff_pct
     effective_close = realtime_close if use_realtime else kline_close
 
     change = effective_close - open_val
@@ -224,6 +235,8 @@ async def is_rapid_market_move(df: pd.DataFrame, close: float) -> Tuple[bool, Di
         "change": change,
         "change_pct": change_pct,
         "threshold_pct": threshold_pct,
+        "atr_period": atr_period,
+        "source_max_diff_pct": source_max_diff_pct,
         "price_source": "realtime" if use_realtime else "kline_fallback",
         "source_diff_pct": source_diff_pct,
     }

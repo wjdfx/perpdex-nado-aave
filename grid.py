@@ -30,6 +30,16 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "MARKET_ID": int(os.getenv('MARKET_ID', 0)),  # 市场ID
         "ATR_THRESHOLD": float(os.getenv('ATR_THRESHOLD', 0.8)),  # ATR波动阈值
         "RAPID_MOVE_THRESHOLD_PCT": float(os.getenv('RAPID_MOVE_THRESHOLD_PCT', 0.01)),  # 急跌/急涨阈值（百分比）
+        "RAPID_MOVE_ATR_PERIOD": int(os.getenv('RAPID_MOVE_ATR_PERIOD', 7)),  # 急跌/急涨ATR周期
+        "RAPID_MOVE_SOURCE_MAX_DIFF_PCT": float(os.getenv('RAPID_MOVE_SOURCE_MAX_DIFF_PCT', 0.2)),  # 实时价与K线收盘价最大允许偏差
+        "ADVERSE_EMA_PERIOD": int(os.getenv('ADVERSE_EMA_PERIOD', 20)),  # 不利趋势EMA周期
+        "ADVERSE_RSI_PERIOD": int(os.getenv('ADVERSE_RSI_PERIOD', 14)),  # 不利趋势RSI周期
+        "ADVERSE_ADX_PERIOD": int(os.getenv('ADVERSE_ADX_PERIOD', 14)),  # 不利趋势ADX周期
+        "ADVERSE_ADX_THRESHOLD": float(os.getenv('ADVERSE_ADX_THRESHOLD', 25)),  # 不利趋势ADX阈值
+        "ADVERSE_RSI_LONG_THRESHOLD": float(os.getenv('ADVERSE_RSI_LONG_THRESHOLD', 50)),  # LONG不利趋势RSI阈值
+        "ADVERSE_RSI_SHORT_THRESHOLD": float(os.getenv('ADVERSE_RSI_SHORT_THRESHOLD', 50)),  # SHORT不利趋势RSI阈值
+        "EMA_REVERSION_PERIOD": int(os.getenv('EMA_REVERSION_PERIOD', 60)),  # EMA均值回归周期
+        "EMA_REVERSION_THRESHOLD": float(os.getenv('EMA_REVERSION_THRESHOLD', 0.02)),  # EMA均值回归偏离阈值
     }
     
     return {"nado": common_config.copy()}
