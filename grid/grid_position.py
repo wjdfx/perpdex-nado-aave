@@ -170,8 +170,6 @@ async def check_position_limits(position_size: float):
     trading_state.available_position_size = round(
         trading_state.current_position_size - current_pause_position, 2
     )
-    prev_open_spread_alert = trading_state.grid_open_spread_alert
-
     alert_pos = GRID_CONFIG["ALER_POSITION"]
 
     if position_size == 0:
@@ -181,6 +179,15 @@ async def check_position_limits(position_size: float):
     if position_size >= alert_pos:
         trading_state.grid_open_spread_alert = True
         trading_state.grid_decrease_status = False
+        target_step = round(trading_state.base_grid_single_price * 2, 6)
+        logger.warning(
+            "⚠️ 仓位达到预警阈值，触发开仓侧间距放大: 当前仓位=%s, 预警阈值=%s, 基础间距=%s, 当前动态间距=%s, 目标间距(基础*2)=%s",
+            round(position_size, 6),
+            round(alert_pos, 6),
+            round(trading_state.base_grid_single_price, 6),
+            round(trading_state.active_grid_signle_price, 6),
+            target_step,
+        )
     else:
         trading_state.grid_open_spread_alert = False
         trading_state.grid_close_spread_alert = False
@@ -191,20 +198,11 @@ async def check_position_limits(position_size: float):
                 - trading_state.original_open_prices[0]
             )
             trading_state.grid_decrease_status = False
-
-    if not prev_open_spread_alert and trading_state.grid_open_spread_alert:
-        target_step = round(trading_state.base_grid_single_price * 2, 6)
-        logger.warning(
-            "⚠️ 仓位达到预警阈值，触发开仓侧间距放大: 当前仓位=%s, 预警阈值=%s, 目标间距(基础*2)=%s",
-            round(position_size, 6),
-            round(alert_pos, 6),
-            target_step,
-        )
-    elif prev_open_spread_alert and not trading_state.grid_open_spread_alert:
         logger.info(
-            "✅ 仓位回落到预警阈值下方，恢复基础间距: 当前仓位=%s, 预警阈值=%s",
+            "✅ 仓位低于预警阈值，恢复基础间距: 当前仓位=%s, 预警阈值=%s, 基础间距=%s",
             round(position_size, 6),
             round(alert_pos, 6),
+            round(trading_state.base_grid_single_price, 6),
         )
 
     max_pos = GRID_CONFIG["MAX_POSITION"]
