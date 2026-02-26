@@ -602,14 +602,49 @@ class NadoAdapter(ExchangeInterface):
             sender = self._get_sender_bytes32()
             nonce = self._gen_order_nonce()
 
-            # Get digests for order_ids
-            digests = []
+            # Resolve digests from in-memory mapping
+            resolved_pairs: List[Tuple[str, str]] = []
+            unresolved_order_ids: List[str] = []
             for order_id in order_ids:
                 digest = self.order_digests.get(order_id)
                 if digest:
-                    digests.append(digest)
+                    resolved_pairs.append((order_id, digest))
                 else:
-                    logger.warning(f"No digest found for order_id {order_id}")
+                    unresolved_order_ids.append(order_id)
+
+            # Self-heal once: rebuild mapping from current open orders, then retry unresolved ids
+            if unresolved_order_ids:
+                await self._rebuild_order_digest_mapping()
+                still_unresolved: List[str] = []
+                for order_id in unresolved_order_ids:
+                    digest = self.order_digests.get(order_id)
+                    if digest:
+                        resolved_pairs.append((order_id, digest))
+                    else:
+                        still_unresolved.append(order_id)
+                unresolved_order_ids = still_unresolved
+
+            # Allow direct digest cancellation if caller passed digest-format id
+            for order_id in list(unresolved_order_ids):
+                if isinstance(order_id, str) and order_id.startswith("0x") and len(order_id) == 66:
+                    resolved_pairs.append((order_id, order_id))
+                    unresolved_order_ids.remove(order_id)
+
+            if unresolved_order_ids:
+                logger.warning(
+                    "cancel_grid_orders: unresolved order_ids without digest: %s",
+                    unresolved_order_ids,
+                )
+
+            # De-duplicate digests
+            seen_digests = set()
+            resolved_unique_pairs: List[Tuple[str, str]] = []
+            for oid, dg in resolved_pairs:
+                if dg in seen_digests:
+                    continue
+                seen_digests.add(dg)
+                resolved_unique_pairs.append((oid, dg))
+            digests = [dg for _, dg in resolved_unique_pairs]
 
             if not digests:
                 # Do not fallback to product-wide cancellation when digest mapping is missing.
@@ -661,10 +696,15 @@ class NadoAdapter(ExchangeInterface):
             response = await self._rest_execute(payload)
 
             if response.get('status') == 'success':
-                # Remove cancelled orders from tracking
-                for order_id in order_ids:
+                # Remove cancelled orders from tracking (only resolved ones)
+                for order_id, _ in resolved_unique_pairs:
                     self.order_digests.pop(order_id, None)
-                logger.info(f"Successfully cancelled {len(digests)} orders")
+                logger.info(
+                    "Successfully cancelled %s orders (requested=%s, unresolved=%s)",
+                    len(digests),
+                    len(order_ids),
+                    len(unresolved_order_ids),
+                )
                 return True
             else:
                 logger.error(f"Failed to cancel orders: {response.get('error', 'Unknown error')}")
@@ -744,6 +784,36 @@ class NadoAdapter(ExchangeInterface):
         except Exception as e:
             logger.error(f"get_orders error: {e}", exc_info=True)
             return []
+
+    @staticmethod
+    def _client_order_id_from_nonce(nonce: Any) -> str:
+        """Derive client_order_id (low 20 bits) from nonce."""
+        try:
+            return str(int(nonce) & ((1 << 20) - 1))
+        except Exception:
+            return ""
+
+    async def _rebuild_order_digest_mapping(self) -> int:
+        """Rebuild in-memory client_order_id -> digest mapping from current open orders."""
+        try:
+            orders = await self.get_orders()
+            if not isinstance(orders, list):
+                return 0
+
+            restored = 0
+            for order in orders:
+                digest = str(order.get("digest", "") or "").strip()
+                client_order_id = self._client_order_id_from_nonce(order.get("nonce"))
+                if digest and client_order_id and client_order_id not in self.order_digests:
+                    self.order_digests[client_order_id] = digest
+                    restored += 1
+
+            if restored > 0:
+                logger.info("Rebuilt %s order digest mappings from open orders", restored)
+            return restored
+        except Exception as e:
+            logger.error(f"_rebuild_order_digest_mapping error: {e}", exc_info=True)
+            return 0
 
     async def get_trades(self, limit: int = 1) -> List[dict]:
         """Get recent trades."""
