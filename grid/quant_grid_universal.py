@@ -322,7 +322,7 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
         await asyncio.sleep(2)
         await _risk_check(start=True)
         if not await initialize_grid_trading(grid_trading):
-            logger.exception("网格交易初始化失败，退出")
+            logger.error("网格交易初始化失败，退出")
             return
 
         counter = 0

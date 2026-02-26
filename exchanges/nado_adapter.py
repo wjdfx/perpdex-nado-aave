@@ -6,6 +6,7 @@ Uses EIP712 signing with private key authentication.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -122,6 +123,10 @@ class NadoAdapter(ExchangeInterface):
         # Callbacks for subscriptions
         self.callbacks: Dict[str, Callable] = {}
         self.ws_initialized = False
+        self._closing = False
+        self._rest_polling_task_handle: Optional[asyncio.Task] = None
+        self._ws_listener_task_handle: Optional[asyncio.Task] = None
+        self._ws_ping_task_handle: Optional[asyncio.Task] = None
 
         # Contract info (will be fetched during initialization)
         self.chain_id: Optional[int] = None
@@ -282,9 +287,13 @@ class NadoAdapter(ExchangeInterface):
         """Get or create HTTP session."""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=12, connect=5, sock_read=10),
+                trust_env=True,
                 headers={
                     'Content-Type': 'application/json',
-                    'Accept-Encoding': 'gzip, deflate, br'
+                    'Accept': 'application/json',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'User-Agent': 'perpdex-nado-aave/1.0 (+aiohttp)'
                 }
             )
         return self.session
@@ -346,42 +355,99 @@ class NadoAdapter(ExchangeInterface):
 
     async def _rest_query(self, query_type: str, params: Dict = None) -> Dict:
         """Execute REST query."""
-        try:
-            session = await self._get_session()
-            query_params = {"type": query_type}
-            if params:
-                query_params.update(params)
-
-            url = f"{self.gateway_rest}/query"
-            logger.debug(f"REST query: {url} params={query_params}")
-            
-            async with session.get(url, params=query_params) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    logger.error(f"REST query HTTP error {response.status}: {text[:200]}")
-                    return {}
-                    
-                data = await response.json()
-                if data.get('status') == 'success':
-                    return data.get('data', {})
-                else:
-                    logger.error(f"Query {query_type} failed: {data.get('error', 'Unknown error')} (code: {data.get('error_code', 'N/A')})")
-                    return {}
-        except Exception as e:
-            logger.error(f"REST query error ({query_type}): {e}")
+        if self._closing:
             return {}
+
+        query_params = {"type": query_type}
+        if params:
+            query_params.update(params)
+
+        url = f"{self.gateway_rest}/query"
+        logger.debug(f"REST query: {url} params={query_params}")
+
+        retriable_status = {429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
+        last_error: Optional[str] = None
+
+        for attempt in range(1, 4):
+            try:
+                session = await self._get_session()
+                async with session.get(url, params=query_params) as response:
+                    if response.status != 200:
+                        text = await response.text()
+                        msg = f"REST query HTTP error {response.status}: {text[:200]}"
+                        if response.status in retriable_status and attempt < 3:
+                            logger.warning("%s (attempt %s/3, will retry)", msg, attempt)
+                            await asyncio.sleep(0.4 * attempt)
+                            continue
+                        logger.error(msg)
+                        return {}
+
+                    data = await response.json(content_type=None)
+                    if data.get('status') == 'success':
+                        return data.get('data', {})
+                    logger.error(
+                        "Query %s failed: %s (code: %s)",
+                        query_type,
+                        data.get('error', 'Unknown error'),
+                        data.get('error_code', 'N/A'),
+                    )
+                    return {}
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                last_error = str(e)
+                if attempt < 3 and not self._closing:
+                    logger.warning(
+                        "REST query transient error (%s) attempt %s/3: %s",
+                        query_type,
+                        attempt,
+                        e,
+                    )
+                    await asyncio.sleep(0.4 * attempt)
+                    continue
+                break
+
+        if last_error and not self._closing:
+            logger.error(f"REST query error ({query_type}): {last_error}")
+        return {}
 
     async def _rest_execute(self, payload: Dict) -> Dict:
         """Execute REST execute command."""
-        try:
-            session = await self._get_session()
-            url = f"{self.gateway_rest}/execute"
-            async with session.post(url, json=payload) as response:
-                data = await response.json()
-                return data
-        except Exception as e:
-            logger.error(f"REST execute error: {e}")
-            return {"status": "failure", "error": str(e)}
+        if self._closing:
+            return {"status": "failure", "error": "adapter closing"}
+
+        url = f"{self.gateway_rest}/execute"
+        last_error: Optional[str] = None
+        for attempt in range(1, 4):
+            try:
+                session = await self._get_session()
+                async with session.post(url, json=payload) as response:
+                    if response.status != 200:
+                        text = await response.text()
+                        if response.status >= 500 and attempt < 3:
+                            logger.warning(
+                                "REST execute HTTP error %s (attempt %s/3): %s",
+                                response.status,
+                                attempt,
+                                text[:200],
+                            )
+                            await asyncio.sleep(0.4 * attempt)
+                            continue
+                        return {"status": "failure", "error": f"http {response.status}: {text[:200]}"}
+                    data = await response.json(content_type=None)
+                    return data
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                last_error = str(e)
+                if attempt < 3 and not self._closing:
+                    logger.warning("REST execute transient error attempt %s/3: %s", attempt, e)
+                    await asyncio.sleep(0.4 * attempt)
+                    continue
+                break
+
+        logger.error(f"REST execute error: {last_error}")
+        return {"status": "failure", "error": str(last_error)}
 
     async def place_single_order(self, is_ask: bool, price: float, amount: float, reduce_only: bool = False) -> Tuple[bool, str]:
         """
@@ -976,12 +1042,13 @@ class NadoAdapter(ExchangeInterface):
         
         # Always start REST polling as a backup (even if WebSocket works)
         # This ensures we always have price updates
-        asyncio.create_task(self._rest_polling_task())
+        if self._rest_polling_task_handle is None or self._rest_polling_task_handle.done():
+            self._rest_polling_task_handle = asyncio.create_task(self._rest_polling_task())
 
     async def _rest_polling_task(self):
         """Poll REST API for updates (backup for WebSocket)."""
         poll_count = 0
-        while True:
+        while not self._closing:
             try:
                 # Poll market price every cycle
                 await self._poll_market_price()
@@ -996,7 +1063,11 @@ class NadoAdapter(ExchangeInterface):
                     await self._poll_positions()
                 
                 await asyncio.sleep(5)  # 5秒 x 2次 = 10秒检查一次订单，和策略报告同步
+            except asyncio.CancelledError:
+                break
             except Exception as e:
+                if self._closing:
+                    break
                 logger.error(f"REST polling error: {e}")
                 await asyncio.sleep(5)
 
@@ -1130,7 +1201,14 @@ class NadoAdapter(ExchangeInterface):
         """Initialize WebSocket connection."""
         try:
             if self.ws_session is None or self.ws_session.closed:
-                self.ws_session = aiohttp.ClientSession()
+                self.ws_session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=20, connect=8, sock_read=15),
+                    trust_env=True,
+                    headers={
+                        "User-Agent": "perpdex-nado-aave/1.0 (+aiohttp)",
+                        "Accept-Encoding": "gzip, deflate, br",
+                    },
+                )
 
             # Connect to subscriptions WebSocket
             logger.info(f"Connecting to WebSocket: {self.subscriptions_ws}")
@@ -1143,10 +1221,10 @@ class NadoAdapter(ExchangeInterface):
             logger.info("Nado WebSocket initialized successfully")
 
             # Start listening for messages
-            asyncio.create_task(self._ws_listener())
+            self._ws_listener_task_handle = asyncio.create_task(self._ws_listener())
 
             # Start ping task to keep connection alive
-            asyncio.create_task(self._ws_ping_task())
+            self._ws_ping_task_handle = asyncio.create_task(self._ws_ping_task())
 
         except aiohttp.ClientResponseError as e:
             logger.error(f"WebSocket connection failed (HTTP {e.status}): {e.message}")
@@ -1163,18 +1241,22 @@ class NadoAdapter(ExchangeInterface):
 
     async def _ws_ping_task(self):
         """Send ping frames every 30 seconds to keep connection alive."""
-        while self.ws_initialized and self.subscriptions_ws_connection:
+        while (not self._closing) and self.ws_initialized and self.subscriptions_ws_connection:
             try:
                 await asyncio.sleep(25)
                 if self.subscriptions_ws_connection and not self.subscriptions_ws_connection.closed:
                     await self.subscriptions_ws_connection.ping()
+            except asyncio.CancelledError:
+                break
             except Exception as e:
+                if self._closing:
+                    break
                 logger.error(f"WebSocket ping error: {e}")
                 break
 
     async def _ws_listener(self):
         """Listen for WebSocket messages."""
-        while self.ws_initialized and self.subscriptions_ws_connection:
+        while (not self._closing) and self.ws_initialized and self.subscriptions_ws_connection:
             try:
                 msg = await self.subscriptions_ws_connection.receive()
                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -1187,6 +1269,8 @@ class NadoAdapter(ExchangeInterface):
                     logger.error(f"WebSocket error: {msg.data}")
                     break
             except Exception as e:
+                if self._closing:
+                    break
                 logger.error(f"WebSocket listener error: {e}")
                 break
 
@@ -1389,8 +1473,26 @@ class NadoAdapter(ExchangeInterface):
 
     async def close(self):
         """Close connections."""
+        self._closing = True
         self.ws_initialized = False
         try:
+            for task in (
+                self._rest_polling_task_handle,
+                self._ws_listener_task_handle,
+                self._ws_ping_task_handle,
+            ):
+                if task and not task.done():
+                    task.cancel()
+            with contextlib.suppress(Exception):
+                await asyncio.gather(
+                    *(t for t in (
+                        self._rest_polling_task_handle,
+                        self._ws_listener_task_handle,
+                        self._ws_ping_task_handle,
+                    ) if t),
+                    return_exceptions=True,
+                )
+
             if self.subscriptions_ws_connection and not self.subscriptions_ws_connection.closed:
                 await self.subscriptions_ws_connection.close()
             if self.ws_session and not self.ws_session.closed:
