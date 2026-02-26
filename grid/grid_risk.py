@@ -186,6 +186,7 @@ async def is_rapid_market_move(df: pd.DataFrame, close: float) -> Tuple[bool, Di
         (是否触发, 详情字典)
     """
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    GRID_CONFIG = grid_state.GRID_CONFIG
     
     if df is None:
         return False, {}
@@ -194,22 +195,38 @@ async def is_rapid_market_move(df: pd.DataFrame, close: float) -> Tuple[bool, Di
     atr_value = float(atr_series.iloc[-1])
 
     open_val = float(df["open"].iloc[-1])
+    kline_close = float(df["close"].iloc[-1])
+    realtime_close = float(close)
 
-    change = close - open_val
+    # 若实时价与K线收盘价偏差过大，认为数据源可能不一致，回退到K线收盘价避免误触发
+    source_diff_pct = (
+        abs(realtime_close - kline_close) / kline_close if kline_close > 0 else 0.0
+    )
+    use_realtime = source_diff_pct <= 0.2
+    effective_close = realtime_close if use_realtime else kline_close
 
-    threshold = 15.0  # 阈值
+    change = effective_close - open_val
+    change_pct = change / open_val if open_val > 0 else 0.0
+    threshold_pct = float(GRID_CONFIG.get("RAPID_MOVE_THRESHOLD_PCT", 0.01))
 
     triggered = False
     if not OPEN_SIDE_IS_ASK:  # 做多
-        # 急跌：下跌 > 阈值。(change < -threshold)
-        if change < -threshold:
+        # 急跌：下跌超过百分比阈值
+        if change_pct < -threshold_pct:
             triggered = True
     else:  # 做空
-        # 急涨：上涨 > 阈值。
-        if change > threshold:
+        # 急涨：上涨超过百分比阈值
+        if change_pct > threshold_pct:
             triggered = True
 
-    return triggered, {"atr": atr_value, "change": change}
+    return triggered, {
+        "atr": atr_value,
+        "change": change,
+        "change_pct": change_pct,
+        "threshold_pct": threshold_pct,
+        "price_source": "realtime" if use_realtime else "kline_fallback",
+        "source_diff_pct": source_diff_pct,
+    }
 
 
 async def _save_pause_position():

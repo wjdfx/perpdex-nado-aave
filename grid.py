@@ -29,6 +29,7 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "ALER_POSITION": float(os.getenv('ALER_POSITION', 0.3)),  # 警告仓位限制
         "MARKET_ID": int(os.getenv('MARKET_ID', 0)),  # 市场ID
         "ATR_THRESHOLD": float(os.getenv('ATR_THRESHOLD', 0.8)),  # ATR波动阈值
+        "RAPID_MOVE_THRESHOLD_PCT": float(os.getenv('RAPID_MOVE_THRESHOLD_PCT', 0.01)),  # 急跌/急涨阈值（百分比）
     }
     
     return {"nado": common_config.copy()}
