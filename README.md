@@ -14,7 +14,7 @@ pip install -r requirements.txt
 
 2. 配置 `.env`
 
-可参考仓库根目录 `example`：
+可参考仓库根目录 `.env.example`：
 
 - `EXCHANGE_TYPE=nado`
 - `MARKET_ID=0`
