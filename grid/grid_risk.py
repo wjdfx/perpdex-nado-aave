@@ -267,9 +267,15 @@ async def _save_pause_position():
     try:
         # 再次检查是否已经存在占位单（防止并发下的竞态条件）
         if trading_state.pause_position_exist:
+            logger.debug("占位订单已存在，跳过重复创建")
             return
 
         if trading_state.available_position_size <= GRID_CONFIG["GRID_AMOUNT"]:
+            logger.debug(
+                "可用仓位不足以创建占位订单: available=%s, min_required=%s",
+                round(trading_state.available_position_size, 6),
+                round(GRID_CONFIG["GRID_AMOUNT"], 6),
+            )
             return
 
         orders = []
@@ -371,6 +377,15 @@ async def _save_pause_position():
                     final_price = current_price - safe_buffer
 
             orders.append((CLOSE_SIDE_IS_ASK, round(final_price, 2), round(total_position, 2)))
+
+        logger.info(
+            "占位订单计划: 可用仓位=%s, 订单数=%s, 回本价=%s, 基础间距=%s, 详情=%s",
+            round(total_position, 6),
+            len(orders),
+            round(breakeven_price, 6),
+            round(pause_grid_step, 6),
+            orders,
+        )
 
         # 最终安全检查：再次确认可用仓位是否足够（因为是异步，可能中间变了）
         current_available_position = trading_state.available_position_size
