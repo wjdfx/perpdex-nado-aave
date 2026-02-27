@@ -37,12 +37,12 @@ async def _risk_check(start: bool = False):
 
     # 检测不利趋势 (Adverse Trend)
     # 做多：下跌趋势不利。做空：上涨趋势不利。
-    is_adverse, details = await _check_adverse_trend(cs_15m)
+    is_adverse, details, adverse_reason = await _check_adverse_trend(cs_15m)
 
     if is_adverse:
         logger.info("⚠️ 警告：当前15分钟线处于不利趋势，暂停交易")
 
-    is_ema_filter, ema_filter_details = await _check_ema_reversion(cs_15m)
+    is_ema_filter, ema_filter_details, ema_reason = await _check_ema_reversion(cs_15m)
     if is_ema_filter:
         logger.info("⚠️ 警告：当前EMA均值回归趋势不利，暂停交易")
     
@@ -50,10 +50,12 @@ async def _risk_check(start: bool = False):
         "15分钟线不利趋势检测: %s",
         details | {"result": is_adverse},
     )
+    logger.info("15分钟线不利趋势原因: %s", adverse_reason)
     logger.info(
         "EMA均值回归检测: %s",
         ema_filter_details | {"result": is_ema_filter},
     )
+    logger.info("EMA均值回归原因: %s", ema_reason)
 
     if is_adverse or is_ema_filter:
         trading_state.grid_pause = True
@@ -83,7 +85,7 @@ async def _risk_check(start: bool = False):
     #     await _reduce_position()
 
 
-async def _check_adverse_trend(df: pd.DataFrame) -> Tuple[bool, Dict]:
+async def _check_adverse_trend(df: pd.DataFrame) -> Tuple[bool, Dict, str]:
     """
     检测不利趋势
     
@@ -103,7 +105,7 @@ async def _check_adverse_trend(df: pd.DataFrame) -> Tuple[bool, Dict]:
     rsi_short_threshold = float(GRID_CONFIG.get("ADVERSE_RSI_SHORT_THRESHOLD", 50))
     
     if df is None or len(df) < max(ema_period, rsi_period, adx_period):
-        return False, {}
+        return False, {}, "insufficient_data"
 
     ema_series = quota.compute_ema(df, period=ema_period)
     rsi_series = quota.compute_rsi(df, period=rsi_period)
@@ -124,11 +126,23 @@ async def _check_adverse_trend(df: pd.DataFrame) -> Tuple[bool, Dict]:
         is_bearish_adx = pdi_value < mdi_value
         weak_rsi = rsi_value < rsi_long_threshold
         result = is_downtrend and has_trend and is_bearish_adx and weak_rsi
+        reason = (
+            f"close<ema={is_downtrend}, "
+            f"adx>{adx_threshold}={has_trend}, "
+            f"pdi<mdi={is_bearish_adx}, "
+            f"rsi<{rsi_long_threshold}={weak_rsi}"
+        )
     else:  # 做空策略：担心上涨趋势
         is_uptrend = close_value > ema_value
         is_bullish_adx = pdi_value > mdi_value
         strong_rsi = rsi_value > rsi_short_threshold
         result = is_uptrend and has_trend and is_bullish_adx and strong_rsi
+        reason = (
+            f"close>ema={is_uptrend}, "
+            f"adx>{adx_threshold}={has_trend}, "
+            f"pdi>mdi={is_bullish_adx}, "
+            f"rsi>{rsi_short_threshold}={strong_rsi}"
+        )
 
     details = {
         "close": round(close_value, 4),
@@ -138,10 +152,10 @@ async def _check_adverse_trend(df: pd.DataFrame) -> Tuple[bool, Dict]:
         "mdi": round(mdi_value, 4),
         "rsi": round(rsi_value, 4),
     }
-    return result, details
+    return result, details, reason
 
 
-async def _check_ema_reversion(df: pd.DataFrame) -> Tuple[bool, Dict]:
+async def _check_ema_reversion(df: pd.DataFrame) -> Tuple[bool, Dict, str]:
     """
     EMA 均值回归过滤器
     
@@ -160,7 +174,7 @@ async def _check_ema_reversion(df: pd.DataFrame) -> Tuple[bool, Dict]:
     threshold = float(GRID_CONFIG.get("EMA_REVERSION_THRESHOLD", 0.02))
     
     if df is None or len(df) < ema_period:
-        return False, {}
+        return False, {}, "insufficient_data"
 
     ema_series = quota.compute_ema(df, period=ema_period, column="close")
     ema_value = float(ema_series.iloc[-1])
@@ -173,11 +187,19 @@ async def _check_ema_reversion(df: pd.DataFrame) -> Tuple[bool, Dict]:
     if not OPEN_SIDE_IS_ASK:  # 做多
         # 担心回落。如果价格远高于EMA？
         is_triggered = distance > threshold
+        reason = (
+            f"distance>threshold={is_triggered} "
+            f"(distance={distance:.4f}, threshold={threshold:.4f})"
+        )
     else:  # 做空
         # 担心反弹。如果价格远低于EMA。
         is_triggered = distance < -threshold
+        reason = (
+            f"distance<-threshold={is_triggered} "
+            f"(distance={distance:.4f}, -threshold={-threshold:.4f})"
+        )
 
-    return is_triggered, {"distance": round(distance, 4), "threshold": threshold}
+    return is_triggered, {"distance": round(distance, 4), "threshold": threshold}, reason
 
 
 async def is_rapid_market_move(df: pd.DataFrame, close: float) -> Tuple[bool, Dict]:
