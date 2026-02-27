@@ -66,6 +66,19 @@ class NadoAdapter(ExchangeInterface):
         26: "AAVEUSDT0",
     }
 
+    @staticmethod
+    def _env_int(name: str, default: int, min_value: int = 0) -> int:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return default
+        try:
+            value = int(raw)
+            if value < min_value:
+                return default
+            return value
+        except Exception:
+            return default
+
     def __init__(
         self,
         market_id: int = 0,
@@ -105,6 +118,13 @@ class NadoAdapter(ExchangeInterface):
             self.subscriptions_ws = os.getenv('NADO_SUBSCRIPTIONS_WS', 'wss://gateway.test.nado.xyz/v1/subscribe')
             self.archive_url = os.getenv('NADO_ARCHIVE_URL', 'https://archive.test.nado.xyz/v1')
             self.trigger_url = os.getenv('NADO_TRIGGER_URL', 'https://trigger.test.nado.xyz/v1')
+
+        # Network/retry tuning
+        self.recv_time_offset_ms = self._env_int("NADO_RECV_TIME_OFFSET_MS", 1200, min_value=1)
+        self.contracts_query_retry = self._env_int("NADO_CONTRACTS_QUERY_RETRY", 3, min_value=1)
+        self.contracts_query_retry_delay_ms = self._env_int(
+            "NADO_CONTRACTS_QUERY_RETRY_DELAY_MS", 400, min_value=0
+        )
 
         # Initialize account from private key
         if self.private_key:
@@ -221,14 +241,15 @@ class NadoAdapter(ExchangeInterface):
         # Address without 0x prefix + subaccount hex
         return f"0x{self.address[2:].lower()}{subaccount_hex}"
 
-    def _gen_order_nonce(self, recv_time_offset_ms: int = 1200) -> int:
+    def _gen_order_nonce(self, recv_time_offset_ms: Optional[int] = None) -> int:
         """
         Generate order nonce.
         Most significant 44 bits: recv_time in milliseconds
         Least significant 20 bits: random integer
         """
         timestamp_ms = int(time.time() * 1000)
-        recv_time = timestamp_ms + recv_time_offset_ms
+        offset = self.recv_time_offset_ms if recv_time_offset_ms is None else recv_time_offset_ms
+        recv_time = timestamp_ms + offset
         random_int = random.randint(0, (1 << 20) - 1)
         return (recv_time << 20) + random_int
 
@@ -300,20 +321,41 @@ class NadoAdapter(ExchangeInterface):
 
     async def _fetch_contracts(self) -> Dict:
         """Fetch contract information including chain_id and endpoint address."""
-        try:
-            session = await self._get_session()
-            url = f"{self.gateway_rest}/query?type=contracts"
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('status') == 'success':
-                        return data.get('data', {})
+        retriable_status = {429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
+        url = f"{self.gateway_rest}/query?type=contracts"
+        for attempt in range(1, self.contracts_query_retry + 1):
+            try:
+                session = await self._get_session()
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        data = await response.json(content_type=None)
+                        if data.get('status') == 'success':
+                            return data.get('data', {})
+                        logger.warning(
+                            "Contracts query failed: %s (attempt %s/%s)",
+                            data.get('error', 'Unknown error'),
+                            attempt,
+                            self.contracts_query_retry,
+                        )
                     else:
-                        logger.warning(f"Contracts query failed: {data.get('error', 'Unknown error')}")
-                else:
-                    logger.warning(f"Contracts query HTTP error: {response.status}")
-        except Exception as e:
-            logger.error(f"Failed to fetch contracts: {e}")
+                        logger.warning(
+                            "Contracts query HTTP error: %s (attempt %s/%s)",
+                            response.status,
+                            attempt,
+                            self.contracts_query_retry,
+                        )
+                        if response.status not in retriable_status:
+                            break
+            except Exception as e:
+                logger.error(
+                    "Failed to fetch contracts (attempt %s/%s): %s",
+                    attempt,
+                    self.contracts_query_retry,
+                    e,
+                )
+
+            if attempt < self.contracts_query_retry:
+                await asyncio.sleep((self.contracts_query_retry_delay_ms / 1000.0) * attempt)
         return {}
 
     def _sign_typed_data(
