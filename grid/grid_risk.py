@@ -40,13 +40,11 @@ async def _risk_check(start: bool = False):
     is_adverse, details = await _check_adverse_trend(cs_15m)
 
     if is_adverse:
-        logger.info(f"⚠️ 警告：当前15分钟线处于不利趋势, 暂停交易, {details}")
+        logger.info("⚠️ 警告：当前15分钟线处于不利趋势，暂停交易")
 
     is_ema_filter, ema_filter_details = await _check_ema_reversion(cs_15m)
     if is_ema_filter:
-        logger.info(
-            f"⚠️ 警告：当前EMA均值回归趋势不利, 暂停交易, {ema_filter_details}"
-        )
+        logger.info("⚠️ 警告：当前EMA均值回归趋势不利，暂停交易")
     
     logger.info(
         "15分钟线不利趋势检测: %s",
