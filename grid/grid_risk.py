@@ -30,7 +30,9 @@ async def _risk_check(start: bool = False):
     grid_trading = trading_state.grid_trading
 
     cs_15m = await grid_trading.candle_stick(
-        market_id=GRID_CONFIG["MARKET_ID"], resolution="15m"
+        market_id=GRID_CONFIG["MARKET_ID"],
+        resolution="15m",
+        count_back=int(GRID_CONFIG["RISK_KLINE_COUNT"]),
     )
 
     # 检测不利趋势 (Adverse Trend)

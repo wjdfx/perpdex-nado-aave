@@ -22,6 +22,7 @@ pip install -r requirements.txt
 - `NADO_ENV=testnet` 或 `mainnet`
 - `NADO_SYMBOL=AAVEUSDT0`
 - `RISK_BINANCE_SYMBOL=AAVEUSDT`
+- `RISK_KLINE_COUNT=100`
 - `NADO_PRODUCT_ID=`（可留空，程序会在启动时自动按 `NADO_SYMBOL` 解析）
 
 注意：`grid.py` 已启用严格配置模式，网格与风控参数必须在 `.env` 中完整配置，缺失会直接报错退出。

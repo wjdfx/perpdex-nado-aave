@@ -413,7 +413,9 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                 # 获取K线数据
                 cs_1m = await asyncio.wait_for(
                     grid_trading.candle_stick(
-                        market_id=CONFIG["MARKET_ID"], resolution="1m"
+                        market_id=CONFIG["MARKET_ID"],
+                        resolution="1m",
+                        count_back=int(CONFIG["RISK_KLINE_COUNT"]),
                     ),
                     timeout=20,
                 )
