@@ -4,10 +4,12 @@
 """Order format converter focused on Nado format -> CCXT-like format."""
 
 import logging
+import os
 from typing import Dict, Any, Union, List
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+DEFAULT_SYMBOL = os.getenv("NADO_SYMBOL", "UNKNOWN")
 
 
 def normalize_order_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
@@ -119,7 +121,7 @@ def convert_nado_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
             'id': order.get('digest', ''),
             'clientOrderId': str(order.get('nonce', '')),
             'status': 'unknown',
-            'symbol': 'AAVEUSDT0',
+            'symbol': DEFAULT_SYMBOL,
             'side': 'buy',
             'price': 0,
             'amount': 0,
@@ -136,7 +138,7 @@ def convert_unknown_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
         'id': str(order.get('id', order.get('order_id', order.get('client_order_id', '')))),
         'clientOrderId': str(order.get('client_order_id', order.get('clientOrderId', ''))),
         'status': 'unknown',
-        'symbol': 'AAVEUSDT0',
+        'symbol': DEFAULT_SYMBOL,
         'side': 'buy',
         'price': float(order.get('price', 0)),
         'amount': float(order.get('amount', order.get('size', 0))),

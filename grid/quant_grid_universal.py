@@ -304,7 +304,11 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
         logger.exception(f"创建认证令牌失败: {auth}")
         return
 
-    grid_trading = GridTrading(exchange=exchange, market_id=CONFIG["MARKET_ID"])
+    grid_trading = GridTrading(
+        exchange=exchange,
+        market_id=CONFIG["MARKET_ID"],
+        risk_binance_symbol=CONFIG["RISK_BINANCE_SYMBOL"],
+    )
 
     proxy_config = PROXY_URL if PROXY_URL else None
     await exchange.subscribe(

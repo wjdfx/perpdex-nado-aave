@@ -18,7 +18,12 @@ class GridTrading:
     网格交易类，用于在基准价格周围创建网格订单
     """
 
-    def __init__(self, exchange: ExchangeInterface, market_id: int = 0):
+    def __init__(
+        self,
+        exchange: ExchangeInterface,
+        market_id: int = 0,
+        risk_binance_symbol: str = "AAVEUSDT",
+    ):
         """
         初始化网格交易类
 
@@ -28,6 +33,7 @@ class GridTrading:
         """
         self.exchange = exchange
         self.market_id = market_id
+        self.risk_binance_symbol = risk_binance_symbol.strip().upper()
 
         # 价格和数量乘数（与quant.py保持一致）
         self.base_amount_multiplier = pow(10, 4)
@@ -265,19 +271,6 @@ class GridTrading:
             raise ValueError(f"Unsupported resolution: {resolution}")
         return mapping[resolution]
     
-    @staticmethod
-    def _market_id_to_binance_symbol(market_id: int) -> str:
-        """
-        Convert market_id to Binance symbol.
-        """
-        # Mapping from strategy market_id to Binance symbols used for risk candles
-        market_id_to_binance = {
-            0: "AAVEUSDT",
-            1: "BTCUSDT",
-            2: "SOLUSDT",  # SOL-USD -> SOLUSDT
-        }
-        return market_id_to_binance.get(market_id, "AAVEUSDT")
-    
     async def candle_stick(
         self,
         market_id: int,
@@ -288,8 +281,8 @@ class GridTrading:
         Get candlestick data from Binance.
         """
         try:
-            # Convert market_id to Binance symbol
-            binance_symbol = self._market_id_to_binance_symbol(market_id)
+            # 风控K线交易对完全来自配置，避免代码内硬编码币种
+            binance_symbol = self.risk_binance_symbol
             
             # Convert resolution to Binance interval
             binance_interval = self._resolution_to_binance_interval(resolution)
@@ -324,7 +317,9 @@ class GridTrading:
             return df
             
         except Exception as e:
-            logger.error(f"candle_stick error for market_id {market_id} ({binance_symbol}): {e}")
+            logger.error(
+                f"candle_stick error for market_id {market_id} ({binance_symbol}): {e}"
+            )
             return pd.DataFrame()
 
     async def is_yindie(

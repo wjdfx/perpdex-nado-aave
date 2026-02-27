@@ -35,6 +35,7 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "MAX_POSITION": float(_get_required_env("MAX_POSITION")),  # 最大仓位限制
         "ALER_POSITION": float(_get_required_env("ALER_POSITION")),  # 警告仓位限制
         "MARKET_ID": int(_get_required_env("MARKET_ID")),  # 市场ID
+        "RISK_BINANCE_SYMBOL": _get_required_env("RISK_BINANCE_SYMBOL"),  # 风控K线Binance交易对（如 AAVEUSDT）
         "ATR_THRESHOLD": float(_get_required_env("ATR_THRESHOLD")),  # ATR波动阈值
         "RAPID_MOVE_THRESHOLD_PCT": float(_get_required_env("RAPID_MOVE_THRESHOLD_PCT")),  # 急跌/急涨阈值（百分比）
         "RAPID_MOVE_ATR_PERIOD": int(_get_required_env("RAPID_MOVE_ATR_PERIOD")),  # 急跌/急涨ATR周期
