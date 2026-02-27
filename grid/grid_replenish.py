@@ -5,6 +5,7 @@
 """
 
 import logging
+import time
 from typing import List, Optional, Tuple
 
 from . import grid_state
@@ -160,13 +161,15 @@ async def _on_open_side_filled(trade_price: float = 0.0):
     # 再下配对平仓单（使用 reduce_only=True）
     if close_order:
         is_ask, price, amount = close_order
-        success, order_id = await trading_state.grid_trading.place_single_order(
+        success, order_id = await _place_paired_close_order_with_retry(
             is_ask=is_ask,
             price=price,
             amount=amount,
-            reduce_only=True,
+            retry_count=3,
         )
         if success:
+            trading_state.paired_close_retry_block_until = 0.0
+            trading_state.paired_close_target_price = 0.0
             if is_ask:
                 trading_state.sell_orders[order_id] = price
             else:
@@ -176,7 +179,45 @@ async def _on_open_side_filled(trade_price: float = 0.0):
                 f"开仓侧被吃单补充订单成功: 开仓单={len(open_orders)}, 配对平仓单=1, 订单ID={all_order_ids}"
             )
         else:
+            trading_state.paired_close_target_price = float(price)
+            trading_state.paired_close_retry_block_until = time.time() + 20
             logger.error(f"开仓侧补充配对平仓单失败: is_ask={is_ask}, price={price}")
+            logger.warning(
+                "配对平仓单失败，已临时禁止大间距平仓补单20秒: target_price=%s",
+                price,
+            )
+
+
+async def _place_paired_close_order_with_retry(
+    is_ask: bool,
+    price: float,
+    amount: float,
+    retry_count: int = 3,
+) -> Tuple[bool, str]:
+    """
+    开仓成交后的配对平仓单，按同价重试，减少网络/recv_time抖动导致的漏挂。
+    """
+    trading_state = grid_state.trading_state
+    for attempt in range(1, retry_count + 1):
+        success, order_id = await trading_state.grid_trading.place_single_order(
+            is_ask=is_ask,
+            price=price,
+            amount=amount,
+            reduce_only=True,
+        )
+        if success:
+            return True, order_id
+        if attempt < retry_count:
+            delay = 0.35 * attempt
+            logger.warning(
+                "配对平仓单下单失败，准备重试: attempt=%s/%s, price=%s, delay=%.2fs",
+                attempt,
+                retry_count,
+                price,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    return False, ""
 
 
 async def _calc_next_open_side_open_order() -> Optional[Tuple[bool, float, float]]:
@@ -607,6 +648,15 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
     GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
+    
+    if trading_state.paired_close_retry_block_until > time.time():
+        remain = round(trading_state.paired_close_retry_block_until - time.time(), 2)
+        logger.info(
+            "配对平仓单重试窗口内，跳过大间距平仓补单: remain=%ss, target_price=%s",
+            remain,
+            trading_state.paired_close_target_price,
+        )
+        return
     
     if (
         trading_state.last_filled_order_is_close_side

@@ -73,6 +73,9 @@ class GridTradingState:
         self.available_reduce_profit: float = 0.0  # 可用来减仓的收益
         
         self.placing_pause_order: bool = False  # 是否正在进行熔断占位下单 (防止重入)
+        # 开仓成交后配对平仓单失败时，短时禁止大间距平仓补单，避免错误价格覆盖配对单
+        self.paired_close_retry_block_until: float = 0.0
+        self.paired_close_target_price: float = 0.0
 
     @property
     def open_orders(self) -> dict[str, float]:

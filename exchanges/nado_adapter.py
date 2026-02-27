@@ -221,7 +221,7 @@ class NadoAdapter(ExchangeInterface):
         # Address without 0x prefix + subaccount hex
         return f"0x{self.address[2:].lower()}{subaccount_hex}"
 
-    def _gen_order_nonce(self, recv_time_offset_ms: int = 50) -> int:
+    def _gen_order_nonce(self, recv_time_offset_ms: int = 1200) -> int:
         """
         Generate order nonce.
         Most significant 44 bits: recv_time in milliseconds
