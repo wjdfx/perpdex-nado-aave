@@ -4,6 +4,7 @@
 包含订单检查、取消、同步和成交处理。
 """
 
+import asyncio
 import logging
 import time
 from typing import List
@@ -12,6 +13,68 @@ from . import grid_state
 from exchanges.order_converter import normalize_order_to_ccxt
 
 logger = logging.getLogger(__name__)
+
+
+async def _resolve_fill_order_id_with_retry(
+    raw_order_id: str,
+    is_ask: bool,
+    price: float,
+    filled_amount: float,
+    status: str,
+    trading_state,
+) -> str:
+    """
+    对未知 fill 订单ID先进行短暂重试（等待映射同步），再降级到 side+price 匹配。
+    """
+    active_buy = trading_state.buy_orders
+    active_sell = trading_state.sell_orders
+    if raw_order_id in active_buy or raw_order_id in active_sell:
+        return raw_order_id
+
+    if not (filled_amount > 0 and status in ["open", "closed", "filled"]):
+        return raw_order_id
+
+    exchange = getattr(getattr(trading_state, "grid_trading", None), "exchange", None)
+
+    async def _try_resolve_once() -> str:
+        # 1) 直接通过 adapter 的 digest->client_order_id 映射反查
+        if (
+            isinstance(raw_order_id, str)
+            and raw_order_id.startswith("0x")
+            and exchange is not None
+            and hasattr(exchange, "order_digests")
+        ):
+            for cid, dg in exchange.order_digests.items():
+                if dg == raw_order_id and (cid in active_buy or cid in active_sell):
+                    return cid
+
+        # 2) 再做 side+price 的唯一匹配
+        guessed = _match_order_id_by_side_price(
+            is_ask=is_ask,
+            price=float(price),
+            trading_state=trading_state,
+            tolerance=0.01,
+        )
+        if guessed:
+            return guessed
+        return ""
+
+    # 先重试几次，给 websocket/rest 同步一点时间
+    for _ in range(3):
+        resolved = await _try_resolve_once()
+        if resolved:
+            if resolved != raw_order_id:
+                logger.warning(
+                    "fill事件订单ID延迟解析成功: raw_id=%s -> matched_id=%s, side=%s, price=%s",
+                    raw_order_id,
+                    resolved,
+                    "sell" if is_ask else "buy",
+                    price,
+                )
+            return resolved
+        await asyncio.sleep(0.35)
+
+    return raw_order_id
 
 
 def _match_order_id_by_side_price(
@@ -61,24 +124,16 @@ async def check_order_fills(orders: dict):
 
         is_ask = side == "sell"
 
-        # 兜底：若回调只带 digest 或未知ID，尝试按 side+price 匹配活跃订单ID。
+        # 兜底：若回调只带 digest 或未知ID，先短暂重试解析，再做保守匹配。
         if client_order_index not in trading_state.buy_orders and client_order_index not in trading_state.sell_orders:
-            if filled_amount > 0 and status in ["open", "closed", "filled"]:
-                guessed_id = _match_order_id_by_side_price(
-                    is_ask=is_ask,
-                    price=float(price),
-                    trading_state=trading_state,
-                    tolerance=0.01,
-                )
-                if guessed_id:
-                    logger.warning(
-                        "fill事件订单ID缺失，按价格匹配到活跃订单: raw_id=%s -> matched_id=%s, side=%s, price=%s",
-                        client_order_index,
-                        guessed_id,
-                        side,
-                        price,
-                    )
-                    client_order_index = guessed_id
+            client_order_index = await _resolve_fill_order_id_with_retry(
+                raw_order_id=client_order_index,
+                is_ask=is_ask,
+                price=float(price),
+                filled_amount=filled_amount,
+                status=status,
+                trading_state=trading_state,
+            )
 
         # 判断是开仓侧还是平仓侧订单
         if OPEN_SIDE_IS_ASK:  # 做空策略
