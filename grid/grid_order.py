@@ -14,6 +14,30 @@ from exchanges.order_converter import normalize_order_to_ccxt
 logger = logging.getLogger(__name__)
 
 
+def _match_order_id_by_side_price(
+    is_ask: bool,
+    price: float,
+    trading_state,
+    tolerance: float = 0.01,
+) -> str:
+    """
+    当回调里没有可用 clientOrderId（例如只拿到 digest）时，
+    使用 side + price 在活跃订单中做保守唯一匹配。
+    """
+    candidates = trading_state.sell_orders if is_ask else trading_state.buy_orders
+    matches = []
+    for oid, p in candidates.items():
+        try:
+            if abs(float(p) - float(price)) <= tolerance:
+                matches.append((oid, abs(float(p) - float(price))))
+        except Exception:
+            continue
+
+    if len(matches) == 1:
+        return matches[0][0]
+    return ""
+
+
 async def check_order_fills(orders: dict):
     """
     检查订单成交情况
@@ -36,6 +60,25 @@ async def check_order_fills(orders: dict):
         initial_base_amount = float(order.get("amount", 0))
 
         is_ask = side == "sell"
+
+        # 兜底：若回调只带 digest 或未知ID，尝试按 side+price 匹配活跃订单ID。
+        if client_order_index not in trading_state.buy_orders and client_order_index not in trading_state.sell_orders:
+            if filled_amount > 0 and status in ["open", "closed", "filled"]:
+                guessed_id = _match_order_id_by_side_price(
+                    is_ask=is_ask,
+                    price=float(price),
+                    trading_state=trading_state,
+                    tolerance=0.01,
+                )
+                if guessed_id:
+                    logger.warning(
+                        "fill事件订单ID缺失，按价格匹配到活跃订单: raw_id=%s -> matched_id=%s, side=%s, price=%s",
+                        client_order_index,
+                        guessed_id,
+                        side,
+                        price,
+                    )
+                    client_order_index = guessed_id
 
         # 判断是开仓侧还是平仓侧订单
         if OPEN_SIDE_IS_ASK:  # 做空策略
