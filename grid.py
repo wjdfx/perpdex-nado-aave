@@ -49,6 +49,7 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "ADVERSE_RSI_SHORT_THRESHOLD": float(_get_required_env("ADVERSE_RSI_SHORT_THRESHOLD")),  # SHORT不利趋势RSI阈值
         "EMA_REVERSION_PERIOD": int(_get_required_env("EMA_REVERSION_PERIOD")),  # EMA均值回归周期
         "EMA_REVERSION_THRESHOLD": float(_get_required_env("EMA_REVERSION_THRESHOLD")),  # EMA均值回归偏离阈值
+        "OVER_RANGE_GAP_MULTIPLIER": float(os.getenv("OVER_RANGE_GAP_MULTIPLIER", "2.5")),  # 大间距补单：开平仓间距超过该倍数步长时触发
     }
     
     return {"nado": common_config.copy()}

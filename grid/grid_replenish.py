@@ -652,6 +652,7 @@ async def _over_range_replenish_order():
     当开仓侧和平仓侧之间的间距过大时，在中间补充订单。
     """
     trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     
     if trading_state.grid_pause:
@@ -685,8 +686,9 @@ async def _over_range_replenish_order():
 
     # 检查间距
     gap = abs(nearest_close_price - nearest_open_price)
+    gap_multiplier = float(GRID_CONFIG.get("OVER_RANGE_GAP_MULTIPLIER", 2.5))
 
-    if gap > 2.5 * trading_state.active_grid_signle_price:
+    if gap > gap_multiplier * trading_state.active_grid_signle_price:
         # 间距过大！
 
         # 1. 补充开仓侧
