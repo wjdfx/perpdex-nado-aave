@@ -77,6 +77,13 @@ class GridTradingState:
         self.paired_close_retry_block_until: float = 0.0
         self.paired_close_target_price: float = 0.0
 
+        # 上一轮仓位，用于判断成交（仓位增量信号）
+        self.previous_position_size: float = 0.0
+
+        # 待确认成交队列: [(order_id, price, timestamp), ...]
+        # 用于处理「订单消失但仓位未及时更新」（如 Nado 返回延迟）
+        self.pending_open_fill_candidates: list = []
+
     @property
     def open_orders(self) -> dict[str, float]:
         """返回开仓侧的订单字典"""

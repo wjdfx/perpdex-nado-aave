@@ -264,13 +264,16 @@ async def check_order_fills(orders: dict):
                 trading_state.last_replenish_time = time.time()
 
 
-async def check_current_orders():
+async def check_current_orders(position_delta: float = 0.0):
     """
     检查当前订单是否合理：
     如果有一侧订单过多，取消最远的订单
+
+    Args:
+        position_delta: 仓位增量（本轮 - 上轮），用于判断消失的开仓订单是否为成交
     """
     # 优先同步最新订单状态，确保 pause_orders 和 active orders 正确分类
-    await _sync_current_orders()
+    await _sync_current_orders(position_delta=position_delta)
     
     trading_state = grid_state.trading_state
     GRID_CONFIG = grid_state.GRID_CONFIG
@@ -417,10 +420,13 @@ async def _cancel_orders(cancel_orders: List[int]):
         logger.info(f"批量取消订单成功: {len(cancel_orders)}个")
 
 
-async def _sync_current_orders():
+async def _sync_current_orders(position_delta: float = 0.0):
     """
     同步订单状态（通过 REST API 核对当前订单列表）
     检测订单消失并处理部分成交的情况
+
+    Args:
+        position_delta: 仓位增量（本轮 - 上轮），用于判断消失的开仓订单是否为成交
 
     重要说明：
     - 占位订单（pause_orders）是熔断时用于回本的订单
@@ -431,6 +437,7 @@ async def _sync_current_orders():
     """
     trading_state = grid_state.trading_state
     GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
 
     # 保存同步前的订单列表，用于检测消失的订单
@@ -541,7 +548,7 @@ async def _sync_current_orders():
     disappeared_buy_orders = set(previous_buy_orders.keys()) - found_order_ids
     disappeared_sell_orders = set(previous_sell_orders.keys()) - found_order_ids
 
-    # 处理消失的订单（仅记录，不默认视为成交）
+    # 处理消失的订单（用仓位增量判断开仓侧是否为成交）
     # 注意：在 Nado 上，订单可能因为取消/系统清理/连接抖动而从快照消失。
     # 若直接按“成交”处理会导致仓位和收益被误记，并触发连锁补单。
     if disappeared_buy_orders or disappeared_sell_orders:
@@ -549,26 +556,53 @@ async def _sync_current_orders():
             f"检测到订单消失: 买单={len(disappeared_buy_orders)}, "
             f"卖单={len(disappeared_sell_orders)}"
         )
-        if disappeared_buy_orders:
-            prices = [
-                previous_buy_orders[oid]
-                for oid in disappeared_buy_orders
-                if oid in previous_buy_orders
-            ]
-            logger.warning(
-                "消失买单仅同步移除，不视为成交。IDs=%s, prices=%s",
-                sorted(disappeared_buy_orders),
-                prices,
+        remaining_delta = float(position_delta)
+        grid_amount = float(GRID_CONFIG["GRID_AMOUNT"])
+        threshold = grid_amount * 0.9
+
+        disappeared_open_orders = (
+            [(oid, previous_buy_orders[oid]) for oid in disappeared_buy_orders if oid in previous_buy_orders]
+            if not OPEN_SIDE_IS_ASK
+            else [(oid, previous_sell_orders[oid]) for oid in disappeared_sell_orders if oid in previous_sell_orders]
+        )
+        for oid, price in disappeared_open_orders:
+            if remaining_delta >= threshold:
+                logger.info(
+                    "消失的开仓单视为成交(仓位增量=%.2f): ID=%s, 价格=%s, 触发配对补单",
+                    remaining_delta,
+                    oid,
+                    price,
+                )
+                trading_state.last_filled_order_is_close_side = False
+                trading_state.last_trade_price = float(price)
+                trading_state.filled_count += 1
+                remaining_delta -= grid_amount
+
+                from .grid_replenish import replenish_grid
+
+                await replenish_grid(True, float(price))
+            else:
+                candidate = (oid, price, time.time())
+                if not hasattr(trading_state, "pending_open_fill_candidates"):
+                    trading_state.pending_open_fill_candidates = []
+                trading_state.pending_open_fill_candidates.append(candidate)
+                logger.warning(
+                    "消失的开仓单加入待确认队列(仓位增量=%.2f): ID=%s, 价格=%s",
+                    remaining_delta,
+                    oid,
+                    price,
+                )
+
+        disappeared_close = disappeared_sell_orders if not OPEN_SIDE_IS_ASK else disappeared_buy_orders
+        if disappeared_close:
+            prices = (
+                [previous_sell_orders[oid] for oid in disappeared_close if oid in previous_sell_orders]
+                if not OPEN_SIDE_IS_ASK
+                else [previous_buy_orders[oid] for oid in disappeared_close if oid in previous_buy_orders]
             )
-        if disappeared_sell_orders:
-            prices = [
-                previous_sell_orders[oid]
-                for oid in disappeared_sell_orders
-                if oid in previous_sell_orders
-            ]
             logger.warning(
-                "消失卖单仅同步移除，不视为成交。IDs=%s, prices=%s",
-                sorted(disappeared_sell_orders),
+                "消失平仓单仅同步移除，不视为成交。IDs=%s, prices=%s",
+                sorted(disappeared_close),
                 prices,
             )
 
@@ -581,6 +615,37 @@ async def _sync_current_orders():
 
     trading_state.buy_orders = buy_orders
     trading_state.sell_orders = sell_orders
+
+    # 处理待确认成交队列（订单消失但仓位延迟更新）
+    if getattr(trading_state, "pending_open_fill_candidates", None):
+        remaining_delta = float(position_delta)
+        grid_amount = float(GRID_CONFIG["GRID_AMOUNT"])
+        threshold = grid_amount * 0.9
+        now = time.time()
+        PENDING_TIMEOUT = 60.0
+
+        for candidate in list(trading_state.pending_open_fill_candidates):
+            oid, price, ts = candidate
+            if now - ts > PENDING_TIMEOUT:
+                trading_state.pending_open_fill_candidates.remove(candidate)
+                logger.info("待确认成交超时移除: ID=%s, 价格=%s", oid, price)
+            elif remaining_delta >= threshold:
+                trading_state.pending_open_fill_candidates.remove(candidate)
+                logger.info(
+                    "待确认成交视为成交(仓位增量=%.2f): ID=%s, 价格=%s, 触发配对补单",
+                    remaining_delta,
+                    oid,
+                    price,
+                )
+                trading_state.last_filled_order_is_close_side = False
+                trading_state.last_trade_price = float(price)
+                trading_state.filled_count += 1
+                remaining_delta -= grid_amount
+
+                from .grid_replenish import replenish_grid
+
+                await replenish_grid(True, float(price))
+                break
 
 
 async def _handle_disappeared_order_with_fills(

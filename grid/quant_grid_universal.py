@@ -335,6 +335,9 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                 # 每10秒打印一次网格状态
                 await asyncio.sleep(10)
 
+                # 记录本轮前的仓位，用于判断消失订单是否为成交（仓位增量信号）
+                previous_position_size = trading_state.current_position_size
+
                 # 检查仓位状态
                 account_info = await asyncio.wait_for(
                     exchange.get_account_info(), timeout=20
@@ -369,6 +372,7 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
 
                 trading_state.current_position_size = round(abs(float(position_size)), 2)
                 trading_state.current_position_sign = position_sign
+                position_delta = trading_state.current_position_size - previous_position_size
                 if position_size is not None:
                     await check_position_limits(trading_state.current_position_size)
 
@@ -461,7 +465,10 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                 # 补单
                 async with replenish_grid_lock:
                     if time.time() - trading_state.last_replenish_time > 5:
-                        await asyncio.wait_for(check_current_orders(), timeout=20)
+                        await asyncio.wait_for(
+                            check_current_orders(position_delta=position_delta),
+                            timeout=20,
+                        )
                         await asyncio.wait_for(replenish_grid(False), timeout=20)
 
                 counter += 1
