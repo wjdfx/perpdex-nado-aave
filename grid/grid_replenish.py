@@ -5,6 +5,7 @@
 """
 
 import logging
+import asyncio
 import time
 from typing import List, Optional, Tuple
 
@@ -160,64 +161,174 @@ async def _on_open_side_filled(trade_price: float = 0.0):
 
     # 再下配对平仓单（使用 reduce_only=True）
     if close_order:
-        is_ask, price, amount = close_order
-        success, order_id = await _place_paired_close_order_with_retry(
+        is_ask, _price, amount = close_order
+        if float(trade_price) > 0:
+            fill_price_for_retry = float(trade_price)
+        else:
+            step_for_backfill = float(trading_state.base_grid_single_price or 0.0)
+            if step_for_backfill <= 0:
+                step_for_backfill = float(trading_state.active_grid_signle_price or 0.0)
+            if not OPEN_SIDE_IS_ASK:  # LONG: _price≈fill+step
+                fill_price_for_retry = float(_price) - step_for_backfill
+            else:  # SHORT: _price≈fill-step
+                fill_price_for_retry = float(_price) + step_for_backfill
+        success, order_id, final_price = await _place_paired_close_order_with_retry(
             is_ask=is_ask,
-            price=price,
+            fill_price=fill_price_for_retry,
             amount=amount,
-            retry_count=3,
         )
         if success:
             trading_state.paired_close_retry_block_until = 0.0
             trading_state.paired_close_target_price = 0.0
             if is_ask:
-                trading_state.sell_orders[order_id] = price
+                trading_state.sell_orders[order_id] = final_price
             else:
-                trading_state.buy_orders[order_id] = price
+                trading_state.buy_orders[order_id] = final_price
             all_order_ids.append(order_id)
             logger.info(
                 f"开仓侧被吃单补充订单成功: 开仓单={len(open_orders)}, 配对平仓单=1, 订单ID={all_order_ids}"
             )
         else:
-            trading_state.paired_close_target_price = float(price)
+            trading_state.paired_close_target_price = float(final_price)
             trading_state.paired_close_retry_block_until = time.time() + 20
-            logger.error(f"开仓侧补充配对平仓单失败: is_ask={is_ask}, price={price}")
+            logger.error(
+                "开仓侧补充配对平仓单失败: is_ask=%s, final_price=%s",
+                is_ask,
+                final_price,
+            )
             logger.warning(
                 "配对平仓单失败，已临时禁止大间距平仓补单20秒: target_price=%s",
-                price,
+                final_price,
             )
 
 
 async def _place_paired_close_order_with_retry(
     is_ask: bool,
-    price: float,
+    fill_price: float,
     amount: float,
-    retry_count: int = 3,
-) -> Tuple[bool, str]:
+    stage3_retry_interval_sec: float = 2.0,
+    stage3_log_interval_sec: float = 30.0,
+) -> Tuple[bool, str, float]:
     """
-    开仓成交后的配对平仓单，按同价重试，减少网络/recv_time抖动导致的漏挂。
+    开仓成交后的配对平仓单重试状态机（1x -> 2x -> 3x）。
+    - 全程 post-only + reduce_only
+    - 1x失败后升2x，2x失败后升3x
+    - 3x阶段持续重试直到成功（日志节流）
     """
     trading_state = grid_state.trading_state
-    for attempt in range(1, retry_count + 1):
-        success, order_id = await trading_state.grid_trading.place_single_order(
-            is_ask=is_ask,
-            price=price,
-            amount=amount,
-            reduce_only=True,
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+
+    step = float(trading_state.base_grid_single_price or 0.0)
+    if step <= 0:
+        step = float(trading_state.active_grid_signle_price or 0.0)
+    if step <= 0:
+        logger.error("配对平仓单重试失败：step无效，无法计算目标价格")
+        return False, "", float(fill_price)
+
+    stages = [
+        ("1x", 1, 3),
+        ("2x", 2, 5),
+        ("3x", 3, None),  # 持续重试
+    ]
+    stage_index = 0
+    last_error = "unknown"
+    last_log_time = 0.0
+
+    def calc_target_price(multiplier: int) -> float:
+        if not OPEN_SIDE_IS_ASK:  # LONG: 买入后挂卖单
+            return round(float(fill_price) + step * multiplier, 2)
+        # SHORT: 卖出后挂买单
+        return round(float(fill_price) - step * multiplier, 2)
+
+    while stage_index < len(stages):
+        stage_name, stage_multiplier, stage_retry_limit = stages[stage_index]
+        target_price = calc_target_price(stage_multiplier)
+
+        # 若目标价已落后于当前价，阶段升级（LONG: target<=current, SHORT: target>=current）
+        current_price = float(trading_state.current_price or 0.0)
+        is_behind_market = (
+            (not OPEN_SIDE_IS_ASK and current_price > 0 and target_price <= current_price)
+            or (OPEN_SIDE_IS_ASK and current_price > 0 and target_price >= current_price)
         )
-        if success:
-            return True, order_id
-        if attempt < retry_count:
-            delay = 0.35 * attempt
+        if is_behind_market and stage_index < 2:
+            old_stage = stage_name
+            stage_index += 1
+            new_stage = stages[stage_index][0]
             logger.warning(
-                "配对平仓单下单失败，准备重试: attempt=%s/%s, price=%s, delay=%.2fs",
-                attempt,
-                retry_count,
-                price,
-                delay,
+                "配对平仓阶段升级: from=%s to=%s, reason=target_behind_market, fill=%s, step=%s, current=%s",
+                old_stage,
+                new_stage,
+                round(float(fill_price), 6),
+                round(step, 6),
+                round(current_price, 6),
             )
-            await asyncio.sleep(delay)
-    return False, ""
+            continue
+
+        attempt = 0
+        while stage_retry_limit is None or attempt < stage_retry_limit:
+            attempt += 1
+            target_price = calc_target_price(stage_multiplier)
+            trading_state.paired_close_target_price = float(target_price)
+            trading_state.paired_close_retry_block_until = time.time() + 20
+
+            success, order_id = await trading_state.grid_trading.place_single_order(
+                is_ask=is_ask,
+                price=target_price,
+                amount=amount,
+                reduce_only=True,
+            )
+            if success:
+                logger.info(
+                    "配对平仓成功: stage=%s, attempt=%s, order_id=%s, price=%s",
+                    stage_name,
+                    attempt,
+                    order_id,
+                    target_price,
+                )
+                return True, order_id, target_price
+
+            last_error = "place_single_order_failed"
+            logger.warning(
+                "配对平仓重试: stage=%s, attempt=%s%s, price=%s, error=%s",
+                stage_name,
+                attempt,
+                "" if stage_retry_limit is None else f"/{stage_retry_limit}",
+                target_price,
+                last_error,
+            )
+
+            # 3x 阶段持续重试并节流日志
+            if stage_retry_limit is None:
+                now = time.time()
+                if now - last_log_time >= stage3_log_interval_sec:
+                    logger.warning(
+                        "配对平仓仍未成功，持续重试中: stage=%s, fill=%s, target=%s",
+                        stage_name,
+                        round(float(fill_price), 6),
+                        target_price,
+                    )
+                    last_log_time = now
+                await asyncio.sleep(stage3_retry_interval_sec)
+            else:
+                await asyncio.sleep(0.35 * attempt)
+
+        # 当前阶段耗尽，升级阶段
+        if stage_index < 2:
+            old_stage = stage_name
+            stage_index += 1
+            new_stage = stages[stage_index][0]
+            logger.warning(
+                "配对平仓阶段升级: from=%s to=%s, reason=retry_exhausted, fill=%s, step=%s",
+                old_stage,
+                new_stage,
+                round(float(fill_price), 6),
+                round(step, 6),
+            )
+        else:
+            # 理论上不会到这里（3x为无限重试），防御性返回
+            break
+
+    return False, "", calc_target_price(3)
 
 
 async def _calc_next_open_side_open_order() -> Optional[Tuple[bool, float, float]]:
@@ -772,7 +883,6 @@ async def _replenish_config_close_orders():
     GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
-    max_distance_pct = float(GRID_CONFIG["CLOSE_ORDER_MAX_DISTANCE_PCT"])
     
     # 使用可承载的“整数平仓单数量”作为上限，避免浮点边界导致反复补/删同一档位订单。
     max_close_orders_by_position = int(
@@ -827,21 +937,6 @@ async def _replenish_config_close_orders():
                 new_price = round(
                     new_price - trading_state.active_grid_signle_price, 2
                 )
-
-        # 防止异常状态下平仓单被补到离当前价过远的位置。
-        current_price = float(trading_state.current_price or 0.0)
-        if current_price > 0:
-            max_distance = current_price * (max_distance_pct / 100.0)
-            distance = abs(new_price - current_price)
-            if distance > max_distance:
-                logger.warning(
-                    "平仓补单价格超出最大偏离限制，停止补单。new_price=%s current=%s distance=%s max=%s",
-                    new_price,
-                    current_price,
-                    round(distance, 6),
-                    round(max_distance, 6),
-                )
-                break
 
         success, order_id = await trading_state.grid_trading.place_single_order(
             is_ask=CLOSE_SIDE_IS_ASK,
