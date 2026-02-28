@@ -558,7 +558,8 @@ async def _sync_current_orders(position_delta: float = 0.0):
         )
         remaining_delta = float(position_delta)
         grid_amount = float(GRID_CONFIG["GRID_AMOUNT"])
-        threshold = grid_amount * 0.9
+        # 必须接近满格才视为成交，避免 0.9 成交被当成 1 挂卖单，导致反向仓位（如 0.1 空单）
+        threshold = grid_amount * 0.99
 
         disappeared_open_orders = (
             [(oid, previous_buy_orders[oid]) for oid in disappeared_buy_orders if oid in previous_buy_orders]
@@ -620,7 +621,8 @@ async def _sync_current_orders(position_delta: float = 0.0):
     if getattr(trading_state, "pending_open_fill_candidates", None):
         remaining_delta = float(position_delta)
         grid_amount = float(GRID_CONFIG["GRID_AMOUNT"])
-        threshold = grid_amount * 0.9
+        # 必须接近满格才视为成交，避免 0.9 成交被当成 1 挂卖单，导致反向仓位（如 0.1 空单）
+        threshold = grid_amount * 0.99
         now = time.time()
         PENDING_TIMEOUT = 60.0
 
