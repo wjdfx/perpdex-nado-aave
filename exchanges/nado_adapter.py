@@ -1392,14 +1392,35 @@ class NadoAdapter(ExchangeInterface):
             
             # IMPORTANT: Find the client_order_id from digest
             # buy_orders/sell_orders use client_order_id as key, not digest
+            # 时序：fill 可能早于 place_order 返回，先延时再重试，最后兜底
             client_order_id = ''
             for cid, d in self.order_digests.items():
                 if d == digest:
                     client_order_id = cid
                     break
-            
+
             if not client_order_id:
-                logger.warning(f"Could not find client_order_id for digest {digest}, using digest as ID")
+                # 1. 延时：给 place_order 存储映射留时间
+                await asyncio.sleep(0.08)
+                for cid, d in self.order_digests.items():
+                    if d == digest:
+                        client_order_id = cid
+                        break
+
+            if not client_order_id:
+                # 2. 重试 1-2 次
+                for _ in range(2):
+                    await asyncio.sleep(0.05)
+                    for cid, d in self.order_digests.items():
+                        if d == digest:
+                            client_order_id = cid
+                            break
+                    if client_order_id:
+                        break
+
+            if not client_order_id:
+                # 3. 兜底：使用 digest
+                logger.warning(f"Could not find client_order_id for digest {digest} after delay+retries, using digest as ID")
                 client_order_id = digest
             
             # Determine if fully filled or partially filled
