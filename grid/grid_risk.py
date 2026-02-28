@@ -57,27 +57,33 @@ async def _risk_check(start: bool = False):
     )
     logger.info("EMA均值回归原因: %s", ema_reason)
 
+    current_pause_position = await _get_current_pause_position()
+    target_pause_position = float(trading_state.current_position_size or 0.0)
+    pause_gap = round(target_pause_position - current_pause_position, 6)
+
     if is_adverse or is_ema_filter:
         trading_state.grid_pause = True
-        # if start:
-        #     trading_state.pause_position_exist = True
-        # else:
-        if not trading_state.pause_position_exist:
-            await _save_pause_position()
     else:
         if trading_state.current_position_size < GRID_CONFIG["MAX_POSITION"]:
             # 解除熔断
             trading_state.grid_pause = False
             trading_state.pause_position_exist = False
 
+    # 熔断下按“冻结缺口”驱动创建占位单：
+    # 当前需要冻结 ≈ 当前总仓位；已冻结由 pause_positions 统计；缺口>最小网格量才继续补。
     if (
         trading_state.grid_pause
         and trading_state.available_position_size > GRID_CONFIG["GRID_AMOUNT"]
-        and not trading_state.pause_position_exist
         and not trading_state.placing_pause_order
+        and pause_gap > GRID_CONFIG["GRID_AMOUNT"]
     ):
-        # 已经熔断状态下如果还有可用仓位，下占位单
-        logger.info(f"开始创建占位订单。。。。。。。。。。。。")
+        logger.info(
+            "开始创建占位订单（冻结缺口驱动）: 当前仓位=%s, 已冻结=%s, 缺口=%s, 可用=%s",
+            round(target_pause_position, 6),
+            round(current_pause_position, 6),
+            round(pause_gap, 6),
+            round(trading_state.available_position_size, 6),
+        )
         await _save_pause_position()
 
     # if trading_state.grid_decrease_status:
@@ -287,11 +293,6 @@ async def _save_pause_position():
     trading_state.placing_pause_order = True
     
     try:
-        # 再次检查是否已经存在占位单（防止并发下的竞态条件）
-        if trading_state.pause_position_exist:
-            logger.debug("占位订单已存在，跳过重复创建")
-            return
-
         if trading_state.available_position_size <= GRID_CONFIG["GRID_AMOUNT"]:
             logger.debug(
                 "可用仓位不足以创建占位订单: available=%s, min_required=%s",
