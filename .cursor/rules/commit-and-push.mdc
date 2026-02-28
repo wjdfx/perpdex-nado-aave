@@ -1,0 +1,14 @@
+---
+description: 完成代码修改后提交并推送到 GitHub
+alwaysApply: true
+---
+
+# Git 提交与推送
+
+完成对项目代码的修改后，应自动执行以下操作：
+
+1. 使用 `git add` 添加已修改的文件
+2. 使用 `git commit -m "..."` 提交，提交信息应简明描述本次修改
+3. 使用 `git push origin <branch>` 推送到 GitHub
+
+提交信息建议使用约定式提交格式：如 `fix:`、`feat:`、`refactor:` 等。
