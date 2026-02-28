@@ -1401,7 +1401,7 @@ class NadoAdapter(ExchangeInterface):
 
             if not client_order_id:
                 # 1. 延时：给 place_order 存储映射留时间
-                await asyncio.sleep(0.08)
+                await asyncio.sleep(0.1)
                 for cid, d in self.order_digests.items():
                     if d == digest:
                         client_order_id = cid
@@ -1410,7 +1410,7 @@ class NadoAdapter(ExchangeInterface):
             if not client_order_id:
                 # 2. 重试 1-2 次
                 for _ in range(2):
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(0.1)
                     for cid, d in self.order_digests.items():
                         if d == digest:
                             client_order_id = cid
