@@ -752,8 +752,8 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
 
 async def _over_range_replenish_close_order(nearest_open_price: float):
     """
-    大间距平仓补单
-    
+    大间距平仓补单。
+    若计算出的 new_price 与已有平仓单（含本轮刚挂的配对卖单）同价则跳过，避免重复挂单。
     Args:
         nearest_open_price: 最近的开仓价格
     """
@@ -786,6 +786,10 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
         nearest_open_price + (trading_state.active_grid_signle_price * 2 * multiplier),
         2,
     )
+
+    # 若该价格已有平仓单（例如刚挂的配对卖单），则不再补，避免重复挂单再被重复检测取消
+    if new_price in trading_state.close_orders.values():
+        return
 
     # 检查当前价格
     if not OPEN_SIDE_IS_ASK:
