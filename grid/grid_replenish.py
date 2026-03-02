@@ -696,10 +696,10 @@ async def _over_range_replenish_order():
         if dist_to_open > trading_state.active_grid_signle_price * 1.5:
             await _over_range_replenish_open_order(nearest_open_price)
 
-        # 2. 补充平仓侧
+        # 2. 补充平仓侧（可用仓位须至少 1 个网格量，否则补出的平仓单会超持仓，被修剪后又可能被立即补回导致反复）
         dist_to_close = abs(nearest_close_price - trading_state.current_price)
         if dist_to_close > trading_state.active_grid_signle_price * 1.5:
-            if trading_state.available_position_size > 0:
+            if trading_state.available_position_size >= GRID_CONFIG["GRID_AMOUNT"]:
                 await _over_range_replenish_close_order(nearest_open_price)
 
 
