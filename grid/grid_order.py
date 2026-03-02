@@ -274,11 +274,18 @@ async def check_current_orders(position_delta: float = 0.0):
     """
     # 优先同步最新订单状态，确保 pause_orders 和 active orders 正确分类
     await _sync_current_orders(position_delta=position_delta)
-    
+
     trading_state = grid_state.trading_state
     GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
-    
+
+    # 同步后按最新占位重算可用仓位，避免与 REST 占位状态不一致
+    from .grid_risk import _get_current_pause_position
+    current_pause = await _get_current_pause_position()
+    trading_state.available_position_size = round(
+        trading_state.current_position_size - current_pause, 2
+    )
+
     # 如果 Open Side 订单过多，取消最远的订单
     if trading_state.open_orders_count > GRID_CONFIG["GRID_COUNT"] + 1:
         logger.info(f"开仓侧订单过多，删除多余订单")
@@ -334,9 +341,10 @@ async def check_current_orders(position_delta: float = 0.0):
 
         await _cancel_orders(cancel_orders)
 
-    # 平仓侧订单不能超过持仓量 (Position Sizing check)
+    # 平仓侧订单不能超过持仓量 (Position Sizing check)，仅在有网格平仓单时修剪（占位订单不参与）
     if (
-        trading_state.close_orders_count * GRID_CONFIG["GRID_AMOUNT"]
+        trading_state.close_orders_count > 0
+        and trading_state.close_orders_count * GRID_CONFIG["GRID_AMOUNT"]
         > trading_state.available_position_size
         and (time.time() - trading_state.start_time) > 60
     ):
@@ -417,6 +425,17 @@ async def _cancel_orders(cancel_orders: List[int]):
                 del trading_state.buy_orders[order_id]
             if order_id in trading_state.sell_orders:
                 del trading_state.sell_orders[order_id]
+            # 若取消的是占位单，同步更新 pause_orders / pause_positions
+            if order_id in trading_state.pause_orders:
+                info = trading_state.pause_orders[order_id]
+                price, amount = info["price"], info["amount"]
+                del trading_state.pause_orders[order_id]
+                if price in trading_state.pause_positions:
+                    trading_state.pause_positions[price] = round(
+                        trading_state.pause_positions[price] - amount, 6
+                    )
+                    if trading_state.pause_positions[price] <= 0:
+                        del trading_state.pause_positions[price]
         logger.info(f"批量取消订单成功: {len(cancel_orders)}个")
 
 
