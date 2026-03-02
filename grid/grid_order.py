@@ -548,6 +548,9 @@ async def _sync_current_orders(position_delta: float = 0.0):
     disappeared_buy_orders = set(previous_buy_orders.keys()) - found_order_ids
     disappeared_sell_orders = set(previous_sell_orders.keys()) - found_order_ids
 
+    # 本轮 sync 内是否调用过 replenish_grid（会新挂配对单/补开仓单）；若调用过，后续赋值 state 时需合并而非覆盖，避免刚挂的单被 REST 快照覆盖导致下一轮 replenish(False) 误触大间距
+    replenish_called_in_sync = False
+
     # 处理消失的订单（用仓位增量判断开仓侧是否为成交）
     # 注意：在 Nado 上，订单可能因为取消/系统清理/连接抖动而从快照消失。
     # 若直接按“成交”处理会导致仓位和收益被误记，并触发连锁补单。
@@ -582,6 +585,7 @@ async def _sync_current_orders(position_delta: float = 0.0):
                 from .grid_replenish import replenish_grid
 
                 await replenish_grid(True, float(price))
+                replenish_called_in_sync = True
             else:
                 candidate = (oid, price, time.time())
                 if not hasattr(trading_state, "pending_open_fill_candidates"):
@@ -614,6 +618,14 @@ async def _sync_current_orders(position_delta: float = 0.0):
     else:
         trading_state.pause_position_exist = False
 
+    # 用 REST 同步结果更新 state；若本轮 sync 内调用过 replenish_grid，需合并保留其新挂的单，避免被覆盖导致下一轮 replenish(False) 误触大间距
+    if replenish_called_in_sync:
+        for oid, pr in trading_state.buy_orders.items():
+            if oid not in buy_orders:
+                buy_orders[oid] = pr
+        for oid, pr in trading_state.sell_orders.items():
+            if oid not in sell_orders:
+                sell_orders[oid] = pr
     trading_state.buy_orders = buy_orders
     trading_state.sell_orders = sell_orders
 
