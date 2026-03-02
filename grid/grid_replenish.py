@@ -729,6 +729,10 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
             2,
         )
 
+        # 若该价格已有开仓单（例如初始化刚挂的），则不再补，避免重复挂单
+        if new_price in trading_state.open_orders.values():
+            return
+
         # 检查当前价格
         if not OPEN_SIDE_IS_ASK:
             if new_price >= trading_state.current_price:

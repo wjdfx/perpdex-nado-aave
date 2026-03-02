@@ -225,6 +225,9 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
                 success = await grid_trading.place_grid_orders(
                     side_param, base_price, grid_count, grid_amount, place_spread
                 )
+                # 下单成功后必须再次同步订单状态，否则 replenish_grid 后续的大间距/配置补单会认为订单数为 0 而重复下单（风控恢复后尤其明显）
+                if success:
+                    await _sync_current_orders()
 
         if success:
             # 初始化价格列表
