@@ -684,17 +684,17 @@ async def _over_range_replenish_order():
             trading_state.active_grid_signle_price * 2 * multiplier
         )
 
-    # 无卖单时追单：开仓单离当前价过远，取消最远单并在靠近当前价处补单
+    # 无卖单时追单：开仓单离当前价过远，取消最远单并在靠近当前价处补单（使用 OVER_RANGE_GAP_MULTIPLIER）
     if trading_state.close_orders_count == 0 and trading_state.open_orders_count > 0:
         step = trading_state.active_grid_signle_price
-        threshold_mult = float(GRID_CONFIG.get("TRAILING_THRESHOLD_MULTIPLIER", 3))
+        gap_mult = float(GRID_CONFIG.get("OVER_RANGE_GAP_MULTIPLIER", 2.5))
         if not OPEN_SIDE_IS_ASK:  # 做多：最远买单 = 最低价
             farthest_open = min(trading_state.open_orders.values())
             dist = trading_state.current_price - farthest_open
         else:  # 做空：最远卖单 = 最高价
             farthest_open = max(trading_state.open_orders.values())
             dist = farthest_open - trading_state.current_price
-        if dist > step * threshold_mult:
+        if dist > step * gap_mult:
             await _over_range_trailing_open_order()
 
     # 检查开平仓间距
