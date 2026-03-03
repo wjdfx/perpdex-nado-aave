@@ -684,17 +684,31 @@ async def _over_range_replenish_order():
             trading_state.active_grid_signle_price * 2 * multiplier
         )
 
-    # 检查间距
+    # 无卖单时追单：开仓单离当前价过远，取消最远单并在靠近当前价处补单
+    if trading_state.close_orders_count == 0 and trading_state.open_orders_count > 0:
+        step = trading_state.active_grid_signle_price
+        threshold_mult = float(GRID_CONFIG.get("TRAILING_THRESHOLD_MULTIPLIER", 3))
+        if not OPEN_SIDE_IS_ASK:  # 做多：最远买单 = 最低价
+            farthest_open = min(trading_state.open_orders.values())
+            dist = trading_state.current_price - farthest_open
+        else:  # 做空：最远卖单 = 最高价
+            farthest_open = max(trading_state.open_orders.values())
+            dist = farthest_open - trading_state.current_price
+        if dist > step * threshold_mult:
+            await _over_range_trailing_open_order()
+
+    # 检查开平仓间距
     gap = abs(nearest_close_price - nearest_open_price)
     gap_multiplier = float(GRID_CONFIG.get("OVER_RANGE_GAP_MULTIPLIER", 2.5))
 
     if gap > gap_multiplier * trading_state.active_grid_signle_price:
         # 间距过大！
 
-        # 1. 补充开仓侧
-        dist_to_open = abs(trading_state.current_price - nearest_open_price)
-        if dist_to_open > trading_state.active_grid_signle_price * 1.5:
-            await _over_range_replenish_open_order(nearest_open_price)
+        # 1. 补充开仓侧（仅当有卖单时，无卖单时由上方追单处理）
+        if trading_state.close_orders_count > 0:
+            dist_to_open = abs(trading_state.current_price - nearest_open_price)
+            if dist_to_open > trading_state.active_grid_signle_price * 1.5:
+                await _over_range_replenish_open_order(nearest_open_price)
 
         # 2. 补充平仓侧：可用须能容纳「当前网格平仓单数 + 1」格，否则补单会导致可平仓量>持仓（做多变净空）
         dist_to_close = abs(nearest_close_price - trading_state.current_price)
@@ -753,6 +767,89 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
             else:
                 trading_state.buy_orders[order_id] = new_price
             logger.info(f"大间距开仓补单成功: {order_id}, {new_price}")
+
+
+async def _over_range_trailing_open_order():
+    """
+    无卖单时追单：开仓单离当前价过远，取消最远单并在靠近当前价处补单。
+    """
+    from exchanges.order_converter import normalize_order_to_ccxt
+    from .grid_order import _cancel_orders
+
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+
+    if not trading_state.current_price or trading_state.open_orders_count == 0:
+        return
+
+    step = trading_state.active_grid_signle_price
+    current_price = trading_state.current_price
+
+    if not OPEN_SIDE_IS_ASK:
+        furthest_price = min(trading_state.open_orders.values())
+        candidates = [(oid, p) for oid, p in trading_state.open_orders.items() if p == furthest_price]
+    else:
+        furthest_price = max(trading_state.open_orders.values())
+        candidates = [(oid, p) for oid, p in trading_state.open_orders.items() if p == furthest_price]
+
+    if not candidates:
+        return
+
+    order_id, order_price = candidates[0]
+    if order_id in getattr(trading_state, "pause_orders", {}):
+        return
+
+    if not OPEN_SIDE_IS_ASK:
+        nearest = max(trading_state.open_orders.values())
+        new_price = round(nearest + step, 2)
+    else:
+        nearest = min(trading_state.open_orders.values())
+        new_price = round(nearest - step, 2)
+
+    if new_price <= 0:
+        return
+
+    existing_prices = set(trading_state.open_orders.values())
+    if any(abs(new_price - p) < step * 0.5 for p in existing_prices if p != order_price):
+        return
+
+    if not OPEN_SIDE_IS_ASK and new_price >= current_price:
+        return
+    if OPEN_SIDE_IS_ASK and new_price <= current_price:
+        return
+
+    try:
+        order_amount = GRID_CONFIG["GRID_AMOUNT"]
+        orders = await trading_state.grid_trading.get_orders_by_rest()
+        if orders:
+            for order in orders:
+                normalized = normalize_order_to_ccxt(order)
+                oid = str(normalized.get("clientOrderId") or normalized.get("id", ""))
+                if oid == str(order_id):
+                    order_amount = float(normalized.get("amount", GRID_CONFIG["GRID_AMOUNT"]))
+                    break
+
+        await _cancel_orders([str(order_id)])
+
+        success, new_order_id = await trading_state.grid_trading.place_single_order(
+            is_ask=OPEN_SIDE_IS_ASK,
+            price=new_price,
+            amount=order_amount,
+        )
+        if success:
+            if OPEN_SIDE_IS_ASK:
+                trading_state.sell_orders[new_order_id] = new_price
+            else:
+                trading_state.buy_orders[new_order_id] = new_price
+            logger.info(
+                "大间距追单成功: 原订单ID=%s, 新订单ID=%s, 原价格=%s, 新价格=%s, 当前价=%s",
+                order_id, new_order_id, order_price, new_price, current_price,
+            )
+        else:
+            logger.warning("大间距追单重新下单失败: 原订单ID=%s, 新价格=%s", order_id, new_price)
+    except Exception as e:
+        logger.error("大间距追单异常: 订单ID=%s, 错误=%s", order_id, e, exc_info=True)
 
 
 async def _over_range_replenish_close_order(nearest_open_price: float):
