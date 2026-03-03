@@ -89,7 +89,7 @@ async def on_market_stats_update(market_id: str, market_stats: dict):
                         min_step, min(raw_step, max_step)
                     )
             except Exception as e:
-                logger.exception(f"Error checking rapid move in market stats update: {e}")
+                logger.exception(f"市场统计更新中检查急变时发生错误: {e}")
 
 
 async def on_account_all_orders_update(account_id: str, orders: dict):
@@ -279,9 +279,9 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
     configure_direction(direction)
     
     if direction == "SHORT":
-        logger.info("Configuration set to SHORT Strategy")
+        logger.info("配置为做空策略")
     else:
-        logger.info("Configuration set to LONG Strategy")
+        logger.info("配置为做多策略")
 
     logger.info("🎯 启动通用网格交易系统")
     logger.info(f"配置参数: {grid_config}")

@@ -203,7 +203,7 @@ class NadoAdapter(ExchangeInterface):
             return exact_matches[0][0]
         if len(exact_matches) > 1:
             logger.error(
-                "Multiple exact product matches for %s: %s",
+                "目标 %s 存在多个精确产品匹配: %s",
                 self.target_symbol,
                 exact_matches,
             )
@@ -211,14 +211,14 @@ class NadoAdapter(ExchangeInterface):
 
         if len(token_perp_matches) == 1:
             logger.warning(
-                "No exact symbol match for %s, fallback to token-perp match: %s",
+                "%s 无精确符号匹配，回退到 token-perp 匹配: %s",
                 self.target_symbol,
                 token_perp_matches[0],
             )
             return token_perp_matches[0][0]
         if len(token_perp_matches) > 1:
             logger.error(
-                "Ambiguous token-perp matches for %s: %s. Set NADO_PRODUCT_ID explicitly.",
+                "%s 存在多个 token-perp 匹配: %s，请显式设置 NADO_PRODUCT_ID",
                 self.target_symbol,
                 token_perp_matches,
             )
@@ -405,7 +405,7 @@ class NadoAdapter(ExchangeInterface):
             query_params.update(params)
 
         url = f"{self.gateway_rest}/query"
-        logger.debug(f"REST query: {url} params={query_params}")
+        logger.debug(f"REST 查询: {url} params={query_params}")
 
         retriable_status = {429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
         last_error: Optional[str] = None
@@ -418,7 +418,7 @@ class NadoAdapter(ExchangeInterface):
                         text = await response.text()
                         msg = f"REST query HTTP error {response.status}: {text[:200]}"
                         if response.status in retriable_status and attempt < 3:
-                            logger.warning("%s (attempt %s/3, will retry)", msg, attempt)
+                            logger.warning("%s (第 %s/3 次尝试，将重试)", msg, attempt)
                             await asyncio.sleep(0.4 * attempt)
                             continue
                         logger.error(msg)
@@ -428,9 +428,9 @@ class NadoAdapter(ExchangeInterface):
                     if data.get('status') == 'success':
                         return data.get('data', {})
                     logger.error(
-                        "Query %s failed: %s (code: %s)",
+                        "查询 %s 失败: %s (code: %s)",
                         query_type,
-                        data.get('error', 'Unknown error'),
+                        data.get('error', '未知错误'),
                         data.get('error_code', 'N/A'),
                     )
                     return {}
@@ -440,7 +440,7 @@ class NadoAdapter(ExchangeInterface):
                 last_error = str(e)
                 if attempt < 3 and not self._closing:
                     logger.warning(
-                        "REST query transient error (%s) attempt %s/3: %s",
+                        "REST 查询临时错误 (%s) 第 %s/3 次: %s",
                         query_type,
                         attempt,
                         e,
@@ -450,7 +450,7 @@ class NadoAdapter(ExchangeInterface):
                 break
 
         if last_error and not self._closing:
-            logger.error(f"REST query error ({query_type}): {last_error}")
+            logger.error(f"REST 查询错误 ({query_type}): {last_error}")
         return {}
 
     async def _rest_execute(self, payload: Dict) -> Dict:
@@ -468,7 +468,7 @@ class NadoAdapter(ExchangeInterface):
                         text = await response.text()
                         if response.status >= 500 and attempt < 3:
                             logger.warning(
-                                "REST execute HTTP error %s (attempt %s/3): %s",
+                                "REST 执行 HTTP 错误 %s (第 %s/3 次): %s",
                                 response.status,
                                 attempt,
                                 text[:200],
@@ -483,12 +483,12 @@ class NadoAdapter(ExchangeInterface):
             except Exception as e:
                 last_error = str(e)
                 if attempt < 3 and not self._closing:
-                    logger.warning("REST execute transient error attempt %s/3: %s", attempt, e)
+                    logger.warning("REST 执行临时错误 第 %s/3 次: %s", attempt, e)
                     await asyncio.sleep(0.4 * attempt)
                     continue
                 break
 
-        logger.error(f"REST execute error: {last_error}")
+        logger.error(f"REST 执行错误: {last_error}")
         return {"status": "failure", "error": str(last_error)}
 
     async def place_single_order(self, is_ask: bool, price: float, amount: float, reduce_only: bool = False) -> Tuple[bool, str]:
@@ -520,7 +520,7 @@ class NadoAdapter(ExchangeInterface):
             if is_ask:
                 amount_x18 = -amount_x18
             
-            logger.debug(f"Placing order: is_ask={is_ask}, price_x18={price_x18}, amount_x18={amount_x18}, reduce_only={reduce_only}")
+            logger.debug(f"下单: is_ask={is_ask}, price_x18={price_x18}, amount_x18={amount_x18}, reduce_only={reduce_only}")
 
             # Build appendix (POST_ONLY by default, with optional reduce_only)
             appendix = self._build_appendix(order_type=3, reduce_only=reduce_only)  # POST_ONLY
@@ -580,13 +580,13 @@ class NadoAdapter(ExchangeInterface):
                 # Use nonce as client order id
                 client_order_id = str(nonce & ((1 << 20) - 1))  # Use last 20 bits as ID
                 self.order_digests[client_order_id] = digest
-                logger.info(f"Order placed successfully: digest={digest}")
+                logger.info(f"订单下单成功: digest={digest}")
                 return True, client_order_id
             else:
-                logger.error(f"Failed to place order: {response.get('error', 'Unknown error')}")
+                logger.error(f"下单失败: {response.get('error', '未知错误')}")
                 return False, ''
         except Exception as e:
-            logger.error(f"place_single_order error: {e}", exc_info=True)
+            logger.error(f"place_single_order 错误: {e}", exc_info=True)
             return False, ''
 
     async def place_multi_orders(self, orders: List[Tuple[bool, float, float]]) -> Tuple[bool, List[str]]:
@@ -596,27 +596,27 @@ class NadoAdapter(ExchangeInterface):
         Returns: (success, order_ids)
         """
         if not orders:
-            logger.warning("place_multi_orders: No orders provided")
+            logger.warning("place_multi_orders: 未提供订单")
             return True, []
 
         try:
             order_ids = []
             for i, (is_ask, price, amount) in enumerate(orders):
-                logger.debug(f"place_multi_orders: Placing order {i+1}/{len(orders)}: is_ask={is_ask}, price={price}, amount={amount}")
+                logger.debug(f"place_multi_orders: 下单 {i+1}/{len(orders)}: is_ask={is_ask}, price={price}, amount={amount}")
                 success, order_id = await self.place_single_order(is_ask, price, amount)
                 if not success:
-                    logger.error(f"place_multi_orders: Failed to place order {i+1}")
+                    logger.error(f"place_multi_orders: 第 {i+1} 笔下单失败")
                     # Cancel previously placed orders
                     if order_ids:
-                        logger.info(f"place_multi_orders: Cancelling {len(order_ids)} previously placed orders")
+                        logger.info(f"place_multi_orders: 取消之前已下的 {len(order_ids)} 笔订单")
                         await self.cancel_grid_orders(order_ids)
                     return False, []
                 order_ids.append(order_id)
 
-            logger.debug(f"place_multi_orders: Successfully placed {len(order_ids)} orders")
+            logger.debug(f"place_multi_orders: 成功下单 {len(order_ids)} 笔")
             return True, order_ids
         except Exception as e:
-            logger.error(f"place_multi_orders error: {e}")
+            logger.error(f"place_multi_orders 错误: {e}")
             return False, []
 
     async def place_single_market_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
@@ -692,10 +692,10 @@ class NadoAdapter(ExchangeInterface):
                 self.order_digests[client_order_id] = digest
                 return True, client_order_id
             else:
-                logger.error(f"Failed to place market order: {response.get('error', 'Unknown error')}")
+                logger.error(f"市价单下单失败: {response.get('error', '未知错误')}")
                 return False, ''
         except Exception as e:
-            logger.error(f"place_single_market_order error: {e}", exc_info=True)
+            logger.error(f"place_single_market_order 错误: {e}", exc_info=True)
             return False, ''
 
     async def cancel_grid_orders(self, order_ids: List[str]) -> bool:
@@ -703,7 +703,7 @@ class NadoAdapter(ExchangeInterface):
         Batch cancel orders.
         """
         if not order_ids:
-            logger.warning("cancel_grid_orders: No order_ids provided")
+            logger.warning("cancel_grid_orders: 未提供订单ID")
             return True
 
         try:
@@ -808,17 +808,17 @@ class NadoAdapter(ExchangeInterface):
                 for order_id, _ in resolved_unique_pairs:
                     self.order_digests.pop(order_id, None)
                 logger.info(
-                    "Successfully cancelled %s orders (requested=%s, unresolved=%s)",
+                    "成功取消 %s 笔订单 (请求=%s, 未解析=%s)",
                     len(digests),
                     len(order_ids),
                     len(unresolved_order_ids),
                 )
                 return True
             else:
-                logger.error(f"Failed to cancel orders: {response.get('error', 'Unknown error')}")
+                logger.error(f"取消订单失败: {response.get('error', '未知错误')}")
                 return False
         except Exception as e:
-            logger.error(f"cancel_grid_orders error: {e}", exc_info=True)
+            logger.error(f"cancel_grid_orders 错误: {e}", exc_info=True)
             return False
 
     async def _cancel_product_orders(self) -> bool:
@@ -862,7 +862,7 @@ class NadoAdapter(ExchangeInterface):
             response = await self._rest_execute(payload)
             return response.get('status') == 'success'
         except Exception as e:
-            logger.error(f"_cancel_product_orders error: {e}")
+            logger.error(f"_cancel_product_orders 错误: {e}")
             return False
 
     async def modify_grid_order(self, order_id: str, new_price: float, new_amount: float) -> bool:
@@ -870,7 +870,7 @@ class NadoAdapter(ExchangeInterface):
         Modify order - Nado does not support order modification directly.
         Need to cancel and create new order.
         """
-        logger.warning("Nado does not support order modification. Use cancel and create new order instead.")
+        logger.warning("Nado 不支持修改订单，请先取消再创建新订单")
         return False
 
     async def get_orders(self) -> List[dict]:
@@ -886,11 +886,11 @@ class NadoAdapter(ExchangeInterface):
             
             # Log raw order format for debugging (only first order)
             if orders and len(orders) > 0:
-                logger.debug(f"Raw Nado order sample: {orders[0]}")
+                logger.debug(f"Nado 原始订单示例: {orders[0]}")
             
             return orders
         except Exception as e:
-            logger.error(f"get_orders error: {e}", exc_info=True)
+            logger.error(f"get_orders 错误: {e}", exc_info=True)
             return []
 
     @staticmethod
@@ -917,10 +917,10 @@ class NadoAdapter(ExchangeInterface):
                     restored += 1
 
             if restored > 0:
-                logger.info("Rebuilt %s order digest mappings from open orders", restored)
+                logger.info("从活跃订单重建 %s 个 order digest 映射", restored)
             return restored
         except Exception as e:
-            logger.error(f"_rebuild_order_digest_mapping error: {e}", exc_info=True)
+            logger.error(f"_rebuild_order_digest_mapping 错误: {e}", exc_info=True)
             return 0
 
     async def get_trades(self, limit: int = 1) -> List[dict]:
@@ -932,7 +932,7 @@ class NadoAdapter(ExchangeInterface):
             # For now, return empty list as trades are handled via subscriptions
             return []
         except Exception as e:
-            logger.error(f"get_trades error: {e}")
+            logger.error(f"get_trades 错误: {e}")
             return []
 
     async def get_positions(self) -> Dict[str, dict]:
@@ -970,7 +970,7 @@ class NadoAdapter(ExchangeInterface):
 
             return positions
         except Exception as e:
-            logger.error(f"get_positions error: {e}", exc_info=True)
+            logger.error(f"get_positions 错误: {e}", exc_info=True)
             return {}
 
     async def get_account(self) -> dict:
@@ -992,7 +992,7 @@ class NadoAdapter(ExchangeInterface):
                 'free_collateral': self._from_x18(int(healths[0].get('health', '0'))) if healths else 0
             }
         except Exception as e:
-            logger.error(f"get_account error: {e}", exc_info=True)
+            logger.error(f"get_account 错误: {e}", exc_info=True)
             return {}
 
     async def candle_stick(self, market_id: int, resolution: str, count_back: int = 200) -> pd.DataFrame:
@@ -1017,15 +1017,15 @@ class NadoAdapter(ExchangeInterface):
             # Use archive API for candlesticks
             # Note: This would require the archive endpoint to be configured
             # For now, return empty DataFrame
-            logger.warning("Candlestick data requires archive/indexer API")
+            logger.warning("K线数据需要 archive/indexer API")
             return pd.DataFrame()
         except Exception as e:
-            logger.error(f"candle_stick error: {e}")
+            logger.error(f"candle_stick 错误: {e}")
             return pd.DataFrame()
 
     async def modify_order(self, order_id: int, new_price: float, new_amount: float) -> bool:
         """Modify order - NOT SUPPORTED by Nado API."""
-        logger.warning("Nado does not support order modification.")
+        logger.warning("Nado 不支持修改订单")
         return False
 
     async def get_orders_by_rest(self) -> List[dict]:
@@ -1049,16 +1049,16 @@ class NadoAdapter(ExchangeInterface):
         self.proxy = proxy
 
         if proxy:
-            logger.warning(f"Nado adapter: Proxy support ({proxy}) may not be fully implemented.")
+            logger.warning(f"Nado 适配器: 代理支持 ({proxy}) 可能未完全实现")
 
         # First, poll market price immediately to get initial price
         if 'market_stats' in callbacks:
-            logger.info("Fetching initial market price...")
+            logger.info("获取初始市场价格...")
             initial_price = await self._poll_market_price()
             if initial_price:
-                logger.info(f"Initial market price: {initial_price}")
+                logger.info(f"初始市场价格: {initial_price}")
             else:
-                logger.warning("Could not fetch initial market price")
+                logger.warning("无法获取初始市场价格")
 
         # Try to initialize WebSocket connection
         if not self.ws_initialized:
@@ -1077,10 +1077,10 @@ class NadoAdapter(ExchangeInterface):
             if 'positions' in callbacks:
                 await self._subscribe_positions()
 
-            logger.info(f"Nado subscribe: Registered WebSocket callbacks for {list(callbacks.keys())}")
+            logger.info(f"Nado 订阅: 已注册 WebSocket 回调 {list(callbacks.keys())}")
         else:
             # WebSocket not available, start REST polling task
-            logger.info("WebSocket not available, starting REST API polling for market data")
+            logger.info("WebSocket 不可用，启动 REST API 轮询获取行情")
         
         # Always start REST polling as a backup (even if WebSocket works)
         # This ensures we always have price updates
@@ -1110,7 +1110,7 @@ class NadoAdapter(ExchangeInterface):
             except Exception as e:
                 if self._closing:
                     break
-                logger.error(f"REST polling error: {e}")
+                logger.error(f"REST 轮询错误: {e}")
                 await asyncio.sleep(5)
 
     async def _poll_orders(self):
@@ -1123,7 +1123,7 @@ class NadoAdapter(ExchangeInterface):
             if orders:
                 # Normalize orders to CCXT format
                 normalized_orders = normalize_orders_list(orders)
-                logger.debug(f"Polled {len(orders)} orders, normalized {len(normalized_orders)}")
+                logger.debug(f"轮询到 {len(orders)} 笔订单，已标准化 {len(normalized_orders)} 笔")
                 
                 callback = self.callbacks['orders']
                 if asyncio.iscoroutinefunction(callback):
@@ -1131,7 +1131,7 @@ class NadoAdapter(ExchangeInterface):
                 else:
                     callback(self.address, normalized_orders)
         except Exception as e:
-            logger.error(f"Poll orders error: {e}")
+            logger.error(f"轮询订单错误: {e}")
 
     async def _poll_positions(self):
         """Poll positions and trigger callback."""
@@ -1147,7 +1147,7 @@ class NadoAdapter(ExchangeInterface):
                 else:
                     callback(self.address, positions)
         except Exception as e:
-            logger.error(f"Poll positions error: {e}")
+            logger.error(f"轮询仓位错误: {e}")
 
     async def _check_for_fills(self):
         """Check for order fills by comparing filled amounts.
@@ -1186,7 +1186,7 @@ class NadoAdapter(ExchangeInterface):
             # Fill detection is handled by WebSocket _handle_fill() method.
                     
         except Exception as e:
-            logger.error(f"_check_for_fills error: {e}", exc_info=True)
+            logger.error(f"_check_for_fills 错误: {e}", exc_info=True)
 
     async def _poll_market_price(self):
         """Poll market price once and trigger callback."""
@@ -1225,7 +1225,7 @@ class NadoAdapter(ExchangeInterface):
                         'best_bid': bid,
                         'best_ask': ask
                     }
-                    logger.debug(f"Market price polled: mark_price={mark_price}, bid={bid}, ask={ask}")
+                    logger.debug(f"行情轮询: mark_price={mark_price}, bid={bid}, ask={ask}")
                     
                     if 'market_stats' in self.callbacks and self.callbacks['market_stats']:
                         callback = self.callbacks['market_stats']
@@ -1236,7 +1236,7 @@ class NadoAdapter(ExchangeInterface):
                     return mark_price
             return None
         except Exception as e:
-            logger.error(f"Poll market price error: {e}")
+            logger.error(f"轮询行情错误: {e}")
             return None
 
     async def _initialize_ws(self):
@@ -1253,14 +1253,14 @@ class NadoAdapter(ExchangeInterface):
                 )
 
             # Connect to subscriptions WebSocket
-            logger.info(f"Connecting to WebSocket: {self.subscriptions_ws}")
+            logger.info(f"连接 WebSocket: {self.subscriptions_ws}")
             self.subscriptions_ws_connection = await self.ws_session.ws_connect(
                 self.subscriptions_ws,
                 compress=15  # Enable permessage-deflate
             )
 
             self.ws_initialized = True
-            logger.info("Nado WebSocket initialized successfully")
+            logger.info("Nado WebSocket 初始化成功")
 
             # Start listening for messages
             self._ws_listener_task_handle = asyncio.create_task(self._ws_listener())
@@ -1269,16 +1269,16 @@ class NadoAdapter(ExchangeInterface):
             self._ws_ping_task_handle = asyncio.create_task(self._ws_ping_task())
 
         except aiohttp.ClientResponseError as e:
-            logger.error(f"WebSocket connection failed (HTTP {e.status}): {e.message}")
-            logger.warning("WebSocket unavailable - will use REST API polling for updates")
+            logger.error(f"WebSocket 连接失败 (HTTP {e.status}): {e.message}")
+            logger.warning("WebSocket 不可用，将使用 REST API 轮询更新")
             self.ws_initialized = False
         except aiohttp.WSServerHandshakeError as e:
-            logger.error(f"WebSocket handshake failed: {e}")
-            logger.warning("WebSocket unavailable - will use REST API polling for updates")
+            logger.error(f"WebSocket 握手失败: {e}")
+            logger.warning("WebSocket 不可用，将使用 REST API 轮询更新")
             self.ws_initialized = False
         except Exception as e:
-            logger.error(f"Failed to initialize WebSocket: {e}")
-            logger.warning("WebSocket unavailable - will use REST API polling for updates")
+            logger.error(f"WebSocket 初始化失败: {e}")
+            logger.warning("WebSocket 不可用，将使用 REST API 轮询更新")
             self.ws_initialized = False
 
     async def _ws_ping_task(self):
@@ -1293,7 +1293,7 @@ class NadoAdapter(ExchangeInterface):
             except Exception as e:
                 if self._closing:
                     break
-                logger.error(f"WebSocket ping error: {e}")
+                logger.error(f"WebSocket ping 错误: {e}")
                 break
 
     async def _ws_listener(self):
@@ -1305,15 +1305,15 @@ class NadoAdapter(ExchangeInterface):
                     data = json.loads(msg.data)
                     await self._handle_ws_message(data)
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    logger.warning("WebSocket connection closed")
+                    logger.warning("WebSocket 连接已关闭")
                     break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
-                    logger.error(f"WebSocket error: {msg.data}")
+                    logger.error(f"WebSocket 错误: {msg.data}")
                     break
             except Exception as e:
                 if self._closing:
                     break
-                logger.error(f"WebSocket listener error: {e}")
+                logger.error(f"WebSocket 监听器错误: {e}")
                 break
 
     async def _handle_ws_message(self, data: dict):
@@ -1346,7 +1346,7 @@ class NadoAdapter(ExchangeInterface):
                 'best_ask': ask
             }
             
-            logger.debug(f"WebSocket market stats: {stats}")
+            logger.debug(f"WebSocket 行情: {stats}")
             
             callback = self.callbacks['market_stats']
             if asyncio.iscoroutinefunction(callback):
@@ -1377,7 +1377,7 @@ class NadoAdapter(ExchangeInterface):
 
     async def _handle_fill(self, data: dict):
         """Handle fill events (order filled)."""
-        logger.info(f"Fill event received: {data}")
+        logger.info(f"收到成交事件: {data}")
         
         if 'orders' in self.callbacks and self.callbacks['orders']:
             # Extract fill information from the actual fill event format
@@ -1420,7 +1420,7 @@ class NadoAdapter(ExchangeInterface):
 
             if not client_order_id:
                 # 3. 兜底：使用 digest
-                logger.warning(f"Could not find client_order_id for digest {digest} after delay+retries, using digest as ID")
+                logger.warning(f"延迟重试后仍无法根据 digest {digest} 找到 client_order_id，使用 digest 作为 ID")
                 client_order_id = digest
             
             # Determine if fully filled or partially filled
@@ -1452,7 +1452,7 @@ class NadoAdapter(ExchangeInterface):
                 'info': data,
             }
             
-            logger.info(f"Processing fill: client_order_id={client_order_id}, digest={digest}, side={'buy' if is_bid else 'sell'}, price={price}, amount={amount_float}, status={ccxt_order['status']}")
+            logger.info(f"处理成交: client_order_id={client_order_id}, digest={digest}, side={'买' if is_bid else '卖'}, price={price}, amount={amount_float}, status={ccxt_order['status']}")
             
             callback = self.callbacks['orders']
             if asyncio.iscoroutinefunction(callback):
@@ -1473,9 +1473,9 @@ class NadoAdapter(ExchangeInterface):
             }
             if self.subscriptions_ws_connection and not self.subscriptions_ws_connection.closed:
                 await self.subscriptions_ws_connection.send_json(message)
-                logger.info(f"Subscribed to best_bid_offer for product {self.product_id}")
+                logger.info(f"已订阅 product {self.product_id} 的 best_bid_offer")
         except Exception as e:
-            logger.error(f"Failed to subscribe to market stats: {e}")
+            logger.error(f"订阅行情失败: {e}")
 
     async def _subscribe_orders(self):
         """Subscribe to order updates."""
@@ -1492,9 +1492,9 @@ class NadoAdapter(ExchangeInterface):
             }
             if self.subscriptions_ws_connection and not self.subscriptions_ws_connection.closed:
                 await self.subscriptions_ws_connection.send_json(message)
-                logger.info(f"Subscribed to order_update for product {self.product_id}")
+                logger.info(f"已订阅 product {self.product_id} 的 order_update")
         except Exception as e:
-            logger.error(f"Failed to subscribe to orders: {e}")
+            logger.error(f"订阅订单失败: {e}")
 
     async def _subscribe_positions(self):
         """Subscribe to position changes."""
@@ -1511,9 +1511,9 @@ class NadoAdapter(ExchangeInterface):
             }
             if self.subscriptions_ws_connection and not self.subscriptions_ws_connection.closed:
                 await self.subscriptions_ws_connection.send_json(message)
-                logger.info(f"Subscribed to position_change for product {self.product_id}")
+                logger.info(f"已订阅 product {self.product_id} 的 position_change")
         except Exception as e:
-            logger.error(f"Failed to subscribe to positions: {e}")
+            logger.error(f"订阅仓位失败: {e}")
 
     async def _subscribe_fills(self):
         """Subscribe to fill events (order executions)."""
@@ -1530,9 +1530,9 @@ class NadoAdapter(ExchangeInterface):
             }
             if self.subscriptions_ws_connection and not self.subscriptions_ws_connection.closed:
                 await self.subscriptions_ws_connection.send_json(message)
-                logger.info(f"Subscribed to fill events for product {self.product_id}")
+                logger.info(f"已订阅 product {self.product_id} 的 fill 事件")
         except Exception as e:
-            logger.error(f"Failed to subscribe to fills: {e}")
+            logger.error(f"订阅成交失败: {e}")
 
     async def close(self):
         """Close connections."""
@@ -1563,7 +1563,7 @@ class NadoAdapter(ExchangeInterface):
             if self.session and not self.session.closed:
                 await self.session.close()
         except Exception as e:
-            logger.error(f"Error closing connections: {e}")
+            logger.error(f"关闭连接时发生错误: {e}")
 
     async def initialize_client(self) -> None:
         """Initialize the exchange client."""
@@ -1574,7 +1574,7 @@ class NadoAdapter(ExchangeInterface):
             self.endpoint_address = contracts.get('endpoint')
 
             if not self.chain_id or not self.endpoint_address:
-                logger.warning("Could not fetch contract info from API, using hardcoded defaults")
+                logger.warning("无法从 API 获取合约信息，使用硬编码默认值")
                 # Use hardcoded values based on environment
                 if self.env == 'mainnet':
                     # Mainnet: Ink chain
@@ -1593,10 +1593,10 @@ class NadoAdapter(ExchangeInterface):
                     "Set NADO_PRODUCT_ID in .env."
                 )
 
-            logger.info(f"Nado client initialized: env={self.env}, chain_id={self.chain_id}, endpoint={self.endpoint_address}")
-            logger.info(f"Product {self.product_id} params: price_increment={self.price_increment}, size_increment={self.size_increment}, min_size={self.min_size}")
+            logger.info(f"Nado 客户端已初始化: env={self.env}, chain_id={self.chain_id}, endpoint={self.endpoint_address}")
+            logger.info(f"产品 {self.product_id} 参数: price_increment={self.price_increment}, size_increment={self.size_increment}, min_size={self.min_size}")
         except Exception as e:
-            logger.error(f"Failed to initialize client: {e}", exc_info=True)
+            logger.error(f"客户端初始化失败: {e}", exc_info=True)
             # Set fallback values based on environment
             if self.env == 'mainnet':
                 self.chain_id = 57073
@@ -1611,7 +1611,7 @@ class NadoAdapter(ExchangeInterface):
             # Query all_products to get trading parameters
             data = await self._rest_query("all_products", {})
             if not data:
-                logger.warning("Could not fetch product params, using defaults")
+                logger.warning("无法获取产品参数，使用默认值")
                 return
 
             # Find our product in perp_products
@@ -1632,7 +1632,7 @@ class NadoAdapter(ExchangeInterface):
                     )
                 self.product_id = resolved
                 logger.info(
-                    f"Resolved target symbol {self.target_symbol} to product_id={self.product_id}"
+                    f"已将目标符号 {self.target_symbol} 解析为 product_id={self.product_id}"
                 )
 
             for product in perp_products:
@@ -1655,14 +1655,14 @@ class NadoAdapter(ExchangeInterface):
                     self.min_size = self._from_x18(min_size)
                     
                     logger.info(
-                        f"Fetched product {self.product_id} ({self.PRODUCT_ID_TO_SYMBOL.get(self.product_id, 'UNKNOWN')}) "
-                        f"params: price_inc={self.price_increment}, size_inc={self.size_increment}, min_size={self.min_size}"
+                        f"已获取产品 {self.product_id} ({self.PRODUCT_ID_TO_SYMBOL.get(self.product_id, '未知')}) "
+                        f"参数: price_inc={self.price_increment}, size_inc={self.size_increment}, min_size={self.min_size}"
                     )
                     return
 
-            logger.warning(f"Product {self.product_id} not found in perp_products")
+            logger.warning(f"产品 {self.product_id} 在 perp_products 中未找到")
         except Exception as e:
-            logger.error(f"Failed to fetch product params: {e}")
+            logger.error(f"获取产品参数失败: {e}")
 
     async def create_auth_token(self) -> Tuple[str, str]:
         """
@@ -1681,7 +1681,7 @@ class NadoAdapter(ExchangeInterface):
             account['positions'] = positions
             return account
         except Exception as e:
-            logger.error(f"get_account_info error: {e}", exc_info=True)
+            logger.error(f"get_account_info 错误: {e}", exc_info=True)
             return {}
 
 

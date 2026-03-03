@@ -141,7 +141,7 @@ async def _on_open_side_filled(trade_price: float = 0.0):
         else:  # 做空：买单价格 = 成交价 - 步长
             close_price = round(trade_price - step, 2)
             close_order = (CLOSE_SIDE_IS_ASK, close_price, GRID_CONFIG["GRID_AMOUNT"])
-        logger.info(f"开仓侧成交后使用 fallback 挂出配对平仓单: 价格={close_order[1]}")
+        logger.info(f"开仓侧成交后使用回退逻辑挂出配对平仓单: 价格={close_order[1]}")
 
     all_order_ids = []
 

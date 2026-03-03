@@ -15,7 +15,7 @@ DEFAULT_SYMBOL = os.getenv("NADO_SYMBOL", "UNKNOWN")
 def normalize_order_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
     if is_nado_order(order):
         return convert_nado_to_ccxt(order)
-    logger.warning(f"Unknown order format: {order}")
+    logger.warning(f"未知订单格式: {order}")
     return convert_unknown_to_ccxt(order)
 
 
@@ -116,7 +116,7 @@ def convert_nado_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"Error converting Nado order to CCXT: {e}", exc_info=True)
+        logger.error(f"Nado 订单转 CCXT 格式时发生错误: {e}", exc_info=True)
         return {
             'id': order.get('digest', ''),
             'clientOrderId': str(order.get('nonce', '')),
@@ -159,5 +159,5 @@ def normalize_orders_list(orders: Union[List[Dict], Dict[str, Any]]) -> List[Dic
         return normalized
     if isinstance(orders, list):
         return [normalize_order_to_ccxt(order) for order in orders]
-    logger.warning(f"Unknown orders format: {type(orders)}")
+    logger.warning(f"未知订单列表格式: {type(orders)}")
     return []
