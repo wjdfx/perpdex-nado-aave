@@ -709,32 +709,51 @@ async def _over_range_replenish_order():
 
     if gap > gap_threshold:
         # 间距过大！
+        step = trading_state.active_grid_signle_price
+        min_dist = step * 1.5
+        dist_to_open = abs(trading_state.current_price - nearest_open_price) if trading_state.close_orders_count > 0 else 0.0
+        dist_to_close = abs(nearest_close_price - trading_state.current_price)
+        need_for_one_more = (trading_state.close_orders_count + 1) * GRID_CONFIG["GRID_AMOUNT"]
+        can_add_close = trading_state.available_position_size >= need_for_one_more
+
         logger.info(
             "大间距触发: gap=%.4f > threshold=%.4f, 开仓数=%s, 平仓数=%s",
             gap, gap_threshold, trading_state.open_orders_count, trading_state.close_orders_count,
         )
 
+        tried_open = False
+        tried_close = False
+
         # 1. 补充开仓侧（仅当有卖单时，无卖单时由上方追单处理）
         if trading_state.close_orders_count > 0:
-            dist_to_open = abs(trading_state.current_price - nearest_open_price)
-            if dist_to_open > trading_state.active_grid_signle_price * 1.5:
+            if dist_to_open > min_dist:
                 logger.info("大间距: 尝试补充开仓侧, dist_to_open=%.4f", dist_to_open)
                 await _over_range_replenish_open_order(nearest_open_price)
+                tried_open = True
             else:
                 logger.debug("大间距: 跳过开仓侧补单, dist_to_open=%.4f <= 1.5*step", dist_to_open)
 
         # 2. 补充平仓侧：可用须能容纳「当前网格平仓单数 + 1」格，否则补单会导致可平仓量>持仓（做多变净空）
-        dist_to_close = abs(nearest_close_price - trading_state.current_price)
-        if dist_to_close > trading_state.active_grid_signle_price * 1.5:
-            need_for_one_more = (trading_state.close_orders_count + 1) * GRID_CONFIG["GRID_AMOUNT"]
-            if trading_state.available_position_size >= need_for_one_more:
+        if dist_to_close > min_dist:
+            if can_add_close:
                 logger.info("大间距: 尝试补充平仓侧, dist_to_close=%.4f", dist_to_close)
                 await _over_range_replenish_close_order(nearest_open_price)
+                tried_close = True
             else:
                 logger.debug(
                     "大间距: 跳过平仓侧补单, 可用=%.2f < need=%.2f",
                     trading_state.available_position_size, need_for_one_more,
                 )
+
+        if not tried_open and not tried_close:
+            reasons = []
+            if trading_state.close_orders_count > 0 and dist_to_open <= min_dist:
+                reasons.append("开仓侧: 当前价距最近开仓价=%.4f <= 1.5*step=%.4f" % (dist_to_open, min_dist))
+            if dist_to_close <= min_dist:
+                reasons.append("平仓侧: 当前价距最近平仓价=%.4f <= 1.5*step=%.4f" % (dist_to_close, min_dist))
+            if dist_to_close > min_dist and not can_add_close:
+                reasons.append("平仓侧: 可用仓位=%.2f < 需再挂一格=%.2f" % (trading_state.available_position_size, need_for_one_more))
+            logger.info("大间距触发但未补单: %s", "; ".join(reasons))
 
 
 async def _over_range_replenish_open_order(nearest_open_price: float):
