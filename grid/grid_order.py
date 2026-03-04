@@ -198,6 +198,9 @@ async def check_order_fills(orders: dict):
                             f"部分成交订单剩余量过小，视为完全成交: ID={client_order_index}, "
                             f"剩余={remaining_amount}"
                         )
+                        trading_state.last_filled_order_is_close_side = is_close_side_order
+                        trading_state.last_trade_price = float(price)
+                        trading_state.filled_count += 1
                         del trading_state.sell_orders[client_order_index]
                         replenish = True
                 elif not is_ask and client_order_index in trading_state.buy_orders:
@@ -206,6 +209,9 @@ async def check_order_fills(orders: dict):
                             f"部分成交订单剩余量过小，视为完全成交: ID={client_order_index}, "
                             f"剩余={remaining_amount}"
                         )
+                        trading_state.last_filled_order_is_close_side = is_close_side_order
+                        trading_state.last_trade_price = float(price)
+                        trading_state.filled_count += 1
                         del trading_state.buy_orders[client_order_index]
                         replenish = True
 
