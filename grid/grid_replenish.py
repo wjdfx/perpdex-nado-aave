@@ -700,22 +700,41 @@ async def _over_range_replenish_order():
     # 检查开平仓间距
     gap = abs(nearest_close_price - nearest_open_price)
     gap_multiplier = float(GRID_CONFIG.get("OVER_RANGE_GAP_MULTIPLIER", 2.5))
+    gap_threshold = gap_multiplier * trading_state.active_grid_signle_price
 
-    if gap > gap_multiplier * trading_state.active_grid_signle_price:
+    logger.debug(
+        "大间距检测: gap=%.4f, threshold=%.4f, nearest_open=%.2f, nearest_close=%.2f, 当前价=%.2f",
+        gap, gap_threshold, nearest_open_price, nearest_close_price, trading_state.current_price,
+    )
+
+    if gap > gap_threshold:
         # 间距过大！
+        logger.info(
+            "大间距触发: gap=%.4f > threshold=%.4f, 开仓数=%s, 平仓数=%s",
+            gap, gap_threshold, trading_state.open_orders_count, trading_state.close_orders_count,
+        )
 
         # 1. 补充开仓侧（仅当有卖单时，无卖单时由上方追单处理）
         if trading_state.close_orders_count > 0:
             dist_to_open = abs(trading_state.current_price - nearest_open_price)
             if dist_to_open > trading_state.active_grid_signle_price * 1.5:
+                logger.info("大间距: 尝试补充开仓侧, dist_to_open=%.4f", dist_to_open)
                 await _over_range_replenish_open_order(nearest_open_price)
+            else:
+                logger.debug("大间距: 跳过开仓侧补单, dist_to_open=%.4f <= 1.5*step", dist_to_open)
 
         # 2. 补充平仓侧：可用须能容纳「当前网格平仓单数 + 1」格，否则补单会导致可平仓量>持仓（做多变净空）
         dist_to_close = abs(nearest_close_price - trading_state.current_price)
         if dist_to_close > trading_state.active_grid_signle_price * 1.5:
             need_for_one_more = (trading_state.close_orders_count + 1) * GRID_CONFIG["GRID_AMOUNT"]
             if trading_state.available_position_size >= need_for_one_more:
+                logger.info("大间距: 尝试补充平仓侧, dist_to_close=%.4f", dist_to_close)
                 await _over_range_replenish_close_order(nearest_open_price)
+            else:
+                logger.debug(
+                    "大间距: 跳过平仓侧补单, 可用=%.2f < need=%.2f",
+                    trading_state.available_position_size, need_for_one_more,
+                )
 
 
 async def _over_range_replenish_open_order(nearest_open_price: float):
@@ -729,44 +748,54 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
     GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     
-    if trading_state.open_orders_count < GRID_CONFIG["MAX_TOTAL_ORDERS"]:
-        # 如果上次成交是开仓侧且存在订单，不再补开仓单
-        if (
-            not trading_state.last_filled_order_is_close_side
-            and trading_state.open_orders_count > 0
-            and trading_state.close_orders_count > 0
-        ):
-            return
+    if trading_state.open_orders_count >= GRID_CONFIG["MAX_TOTAL_ORDERS"]:
+        logger.debug("大间距开仓补单: 跳过, 开仓单数=%s >= MAX_TOTAL_ORDERS=%s", trading_state.open_orders_count, GRID_CONFIG["MAX_TOTAL_ORDERS"])
+        return
 
-        multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-        new_price = round(
-            nearest_open_price + (trading_state.active_grid_signle_price * multiplier),
-            2,
+    # 如果上次成交是开仓侧且存在订单，不再补开仓单
+    if (
+        not trading_state.last_filled_order_is_close_side
+        and trading_state.open_orders_count > 0
+        and trading_state.close_orders_count > 0
+    ):
+        logger.info(
+            "大间距开仓补单: 跳过(上次成交是开仓侧), last_filled_is_close_side=%s, 开仓数=%s, 平仓数=%s",
+            trading_state.last_filled_order_is_close_side, trading_state.open_orders_count, trading_state.close_orders_count,
         )
+        return
 
-        # 若该价格已有开仓单（例如初始化刚挂的），则不再补，避免重复挂单
-        if new_price in trading_state.open_orders.values():
+    multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+    new_price = round(
+        nearest_open_price + (trading_state.active_grid_signle_price * multiplier),
+        2,
+    )
+
+    # 若该价格已有开仓单（例如初始化刚挂的），则不再补，避免重复挂单
+    if new_price in trading_state.open_orders.values():
+        logger.debug("大间距开仓补单: 跳过, 价格%.2f已有开仓单", new_price)
+        return
+
+    # 检查当前价格
+    if not OPEN_SIDE_IS_ASK:
+        if new_price >= trading_state.current_price:
+            logger.debug("大间距开仓补单: 跳过(做多), 新价%.2f >= 当前价%.2f", new_price, trading_state.current_price)
+            return
+    else:
+        if new_price <= trading_state.current_price:
+            logger.debug("大间距开仓补单: 跳过(做空), 新价%.2f <= 当前价%.2f", new_price, trading_state.current_price)
             return
 
-        # 检查当前价格
-        if not OPEN_SIDE_IS_ASK:
-            if new_price >= trading_state.current_price:
-                return
+    success, order_id = await trading_state.grid_trading.place_single_order(
+        is_ask=OPEN_SIDE_IS_ASK,
+        price=new_price,
+        amount=GRID_CONFIG["GRID_AMOUNT"],
+    )
+    if success:
+        if OPEN_SIDE_IS_ASK:
+            trading_state.sell_orders[order_id] = new_price
         else:
-            if new_price <= trading_state.current_price:
-                return
-
-        success, order_id = await trading_state.grid_trading.place_single_order(
-            is_ask=OPEN_SIDE_IS_ASK,
-            price=new_price,
-            amount=GRID_CONFIG["GRID_AMOUNT"],
-        )
-        if success:
-            if OPEN_SIDE_IS_ASK:
-                trading_state.sell_orders[order_id] = new_price
-            else:
-                trading_state.buy_orders[order_id] = new_price
-            logger.info(f"大间距开仓补单成功: {order_id}, {new_price}")
+            trading_state.buy_orders[order_id] = new_price
+        logger.info(f"大间距开仓补单成功: {order_id}, {new_price}")
 
 
 async def _over_range_trailing_open_order():
