@@ -629,6 +629,9 @@ async def _sync_current_orders(position_delta: float = 0.0):
                 sorted(disappeared_close),
                 prices,
             )
+            # 平仓单消失说明有卖单成交（或取消），将 last_filled_order_is_close_side 置为 True，
+            # 否则大间距开仓补单会因“上次成交是开仓侧”一直跳过（REST 路径不会像 WebSocket 那样更新该标志）
+            trading_state.last_filled_order_is_close_side = True
 
     # 检查 pause_position_exist 标志
     if len(trading_state.pause_orders) > 0:
