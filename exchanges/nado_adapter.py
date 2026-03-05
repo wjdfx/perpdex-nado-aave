@@ -912,6 +912,21 @@ class NadoAdapter(ExchangeInterface):
             logger.error(f"get_orders 错误: {e}", exc_info=True)
             return []
 
+    async def get_linked_signer(self) -> Optional[str]:
+        """
+        查询当前子账号绑定的 linked signer 地址。
+        用于验证配置：若返回的地址与你填在 NADO_PRIVATE_KEY 对应的地址一致，则可用该私钥下单。
+        文档: https://docs.nado.xyz/developer-resources/api/gateway/queries/linked-signer
+        """
+        try:
+            sender = self._get_sender_bytes32()
+            data = await self._rest_query("linked_signer", {"subaccount": sender})
+            signer = data.get("linked_signer") or data.get("signer")
+            return signer
+        except Exception as e:
+            logger.error("查询 linked signer 失败: %s", e, exc_info=True)
+            return None
+
     @staticmethod
     def _client_order_id_from_nonce(nonce: Any) -> str:
         """Derive client_order_id (low 20 bits) from nonce."""
