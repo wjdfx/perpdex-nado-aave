@@ -771,18 +771,7 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
         logger.debug("大间距开仓补单: 跳过, 开仓单数=%s >= MAX_TOTAL_ORDERS=%s", trading_state.open_orders_count, GRID_CONFIG["MAX_TOTAL_ORDERS"])
         return
 
-    # 如果上次成交是开仓侧且存在订单，不再补开仓单
-    if (
-        not trading_state.last_filled_order_is_close_side
-        and trading_state.open_orders_count > 0
-        and trading_state.close_orders_count > 0
-    ):
-        logger.info(
-            "大间距开仓补单: 跳过(上次成交是开仓侧), last_filled_is_close_side=%s, 开仓数=%s, 平仓数=%s",
-            trading_state.last_filled_order_is_close_side, trading_state.open_orders_count, trading_state.close_orders_count,
-        )
-        return
-
+    # 大间距时允许补开仓单；若该笔成交，后续会按「开仓侧被吃单补单」挂出配对平仓单，无需因「上次成交是开仓侧」而跳过
     multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
     new_price = round(
         nearest_open_price + (trading_state.active_grid_signle_price * multiplier),
