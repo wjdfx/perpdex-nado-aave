@@ -307,6 +307,22 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
         logger.exception(f"创建认证令牌失败: {auth}")
         return
 
+    # Nado: 启动时打印主账号与 linked signer，便于核对配置
+    if _exchange_type == "nado" and hasattr(exchange, "owner_address"):
+        sub_name = getattr(exchange, "subaccount_name", "default")
+        logger.info("账户信息: 主账号(子账号归属)=%s, 子账号名=%s", getattr(exchange, "owner_address", "N/A"), sub_name)
+        if getattr(exchange, "address", None):
+            logger.info("账户信息: 当前签名账户(NADO_PRIVATE_KEY)=%s", exchange.address)
+        if hasattr(exchange, "get_linked_signer"):
+            try:
+                linked = await exchange.get_linked_signer()
+                if linked:
+                    logger.info("账户信息: 子账号已绑定 linked signer=%s", linked)
+                else:
+                    logger.info("账户信息: 子账号未绑定 linked signer（或查询失败）")
+            except Exception as e:
+                logger.warning("查询 linked signer 失败: %s", e)
+
     grid_trading = GridTrading(
         exchange=exchange,
         market_id=CONFIG["MARKET_ID"],
