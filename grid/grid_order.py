@@ -262,12 +262,20 @@ async def check_order_fills(orders: dict):
                         f"收益={once_profit}"
                     )
 
-        # 在锁范围外补充网格订单
+        # 在锁范围外补充网格订单（若同步路径已按「消失开仓单」补过单则跳过，避免同笔成交补两次卖单）
         if replenish:
-            from .grid_replenish import replenish_grid
-            async with replenish_grid_lock:
-                await replenish_grid(True, float(price))
-                trading_state.last_replenish_time = time.time()
+            skip_replenish = False
+            if is_open_side_order:
+                synced_ids = getattr(trading_state, "replenished_by_sync_open_order_ids", None)
+                if synced_ids is not None and client_order_index in synced_ids:
+                    synced_ids.discard(client_order_index)
+                    skip_replenish = True
+                    logger.info("开仓单成交已在同步路径补单，跳过 fill 事件补单: ID=%s", client_order_index)
+            if not skip_replenish:
+                from .grid_replenish import replenish_grid
+                async with replenish_grid_lock:
+                    await replenish_grid(True, float(price))
+                    trading_state.last_replenish_time = time.time()
 
 
 async def check_current_orders(position_delta: float = 0.0):
@@ -609,6 +617,9 @@ async def _sync_current_orders(position_delta: float = 0.0):
 
                 from .grid_replenish import replenish_grid
 
+                if not hasattr(trading_state, "replenished_by_sync_open_order_ids"):
+                    trading_state.replenished_by_sync_open_order_ids = set()
+                trading_state.replenished_by_sync_open_order_ids.add(oid)
                 await replenish_grid(True, float(price))
                 replenish_called_in_sync = True
             else:
