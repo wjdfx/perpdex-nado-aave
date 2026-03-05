@@ -126,13 +126,29 @@ class NadoAdapter(ExchangeInterface):
             "NADO_CONTRACTS_QUERY_RETRY_DELAY_MS", 400, min_value=0
         )
 
-        # Initialize account from private key
+        # Initialize signing account from private key（签名用密钥，可以是主钱包，也可以是 linked signer / 1CT）
         if self.private_key:
             self.account = Account.from_key(self.private_key)
             self.address = self.account.address
         else:
             self.account = None
             self.address = None
+
+        # Subaccount owner address（子账号实际归属地址，用于 sender 字段）
+        # - 若使用主钱包私钥直连：可不配 NADO_OWNER_ADDRESS，默认等于签名地址 self.address
+        # - 若使用 linked signer / 1CT：必须在 .env 中设置 NADO_OWNER_ADDRESS=主钱包地址，NADO_PRIVATE_KEY=linked signer 私钥
+        owner_address_env = os.getenv("NADO_OWNER_ADDRESS", "").strip()
+        if owner_address_env:
+            normalized = owner_address_env
+            if not normalized.startswith("0x"):
+                normalized = "0x" + normalized
+            normalized = normalized.lower()
+            if len(normalized) != 42:
+                raise ValueError("NADO_OWNER_ADDRESS 格式错误，应为 0x 开头的 42 位以太坊地址")
+            self.owner_address = normalized
+        else:
+            # 兼容旧配置：未显式设置 owner 时，默认使用签名地址
+            self.owner_address = self.address.lower() if self.address else None
 
         # Session management
         self.session: Optional[aiohttp.ClientSession] = None
@@ -231,15 +247,18 @@ class NadoAdapter(ExchangeInterface):
         Generate sender bytes32 (address + subaccount identifier).
         Format: address (20 bytes) + subaccount_name padded to 12 bytes
         """
-        if not self.address:
-            raise ValueError("No address available - private key not set")
+        # 这里使用子账号 owner 地址，而不是签名地址：
+        # - 直连主钱包时：owner_address == 签名地址
+        # - 使用 linked signer / 1CT 时：owner_address=主钱包地址，签名地址=linked signer 地址
+        if not self.owner_address:
+            raise ValueError("No owner address available - 请在环境变量中设置 NADO_OWNER_ADDRESS 或 NADO_PRIVATE_KEY")
 
         # Convert subaccount name to bytes and pad to 12 bytes
         subaccount_bytes = self.subaccount_name.encode('utf-8')[:12].ljust(12, b'\x00')
         subaccount_hex = subaccount_bytes.hex()
 
         # Address without 0x prefix + subaccount hex
-        return f"0x{self.address[2:].lower()}{subaccount_hex}"
+        return f"0x{self.owner_address[2:]}{subaccount_hex}"
 
     def _gen_order_nonce(self, recv_time_offset_ms: Optional[int] = None) -> int:
         """

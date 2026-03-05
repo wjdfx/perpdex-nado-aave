@@ -18,12 +18,20 @@ pip install -r requirements.txt
 
 - `EXCHANGE_TYPE=nado`
 - `MARKET_ID=0`
-- `NADO_PRIVATE_KEY=...`
+- `NADO_OWNER_ADDRESS=...`（可选，子账号 owner 地址）
+- `NADO_PRIVATE_KEY=...`（EIP712 签名用私钥）
 - `NADO_ENV=testnet` 或 `mainnet`
 - `NADO_SYMBOL=AAVEUSDT0`
 - `RISK_BINANCE_SYMBOL=AAVEUSDT`
 - `RISK_KLINE_COUNT=100`
 - `NADO_PRODUCT_ID=`（可留空，程序会在启动时自动按 `NADO_SYMBOL` 解析）
+
+使用方式建议：
+
+- **直接用主钱包私钥（简单）**：只设置 `NADO_PRIVATE_KEY=主钱包私钥`，`NADO_OWNER_ADDRESS` 留空（默认等于私钥地址）。
+- **使用 linked signer / 1-Click Trading（推荐）**：在 Nado 文档 [Linked Signers](https://docs.nado.xyz/developer-resources/get-started/linked-signers) 中为子账号绑定一个签名地址，然后：
+  - `NADO_OWNER_ADDRESS=主钱包地址`（实际持有资金的地址）
+  - `NADO_PRIVATE_KEY=linked signer / 1CT 私钥`（仅用于签名）
 
 注意：`grid.py` 已启用严格配置模式，网格与风控参数必须在 `.env` 中完整配置，缺失会直接报错退出。
 
