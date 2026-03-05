@@ -1045,54 +1045,68 @@ async def _replenish_config_close_orders():
         (trading_state.available_position_size + 1e-9) / GRID_CONFIG["GRID_AMOUNT"]
     )
 
+    step = trading_state.active_grid_signle_price
+    close_prices_set = set(round(p, 2) for p in trading_state.close_orders.values()) if trading_state.close_orders_count > 0 else set()
+
     while (
         trading_state.close_orders_count < max_close_orders_by_position
         and trading_state.close_orders_count < GRID_CONFIG["MAX_TOTAL_ORDERS"]
     ):
-        # 计算最远的平仓价格
-        furthest_close_price = None
-        if trading_state.close_orders_count > 0:
+        # 优先在「靠近当前价」补平仓单（最近开仓价起逐档 +step），便于成交、赚低买高卖差价；避免补在最远卖价外（如 119+）难以成交
+        new_price = None
+        nearest_open_price = None
+        if trading_state.open_orders_count > 0:
             if not OPEN_SIDE_IS_ASK:
-                furthest_close_price = max(trading_state.close_orders.values())
+                nearest_open_price = max(trading_state.open_orders.values())
             else:
-                furthest_close_price = min(trading_state.close_orders.values())
-
-        if furthest_close_price is None:
-            # 基于最近的开仓价格计算
-            if trading_state.open_orders_count > 0:
-                if not OPEN_SIDE_IS_ASK:
-                    nearest_open = max(trading_state.open_orders.values())
-                else:
-                    nearest_open = min(trading_state.open_orders.values())
-            else:
-                nearest_open = trading_state.current_price - (
-                    trading_state.active_grid_signle_price
-                    * (1 if not OPEN_SIDE_IS_ASK else -1)
+                nearest_open_price = min(trading_state.open_orders.values())
+        if nearest_open_price is not None:
+            mult = 1 if not OPEN_SIDE_IS_ASK else -1
+            for k in range(1, 20):  # 最多尝试 20 档，避免死循环
+                candidate = round(nearest_open_price + step * k * mult, 2)
+                current_ok = (
+                    (not OPEN_SIDE_IS_ASK and candidate > trading_state.current_price)
+                    or (OPEN_SIDE_IS_ASK and candidate < trading_state.current_price)
                 )
+                if current_ok and candidate not in close_prices_set:
+                    new_price = candidate
+                    break
+
+        if new_price is None:
+            # 回退：按原逻辑在最远平仓价外补一档
+            furthest_close_price = None
+            if trading_state.close_orders_count > 0:
+                if not OPEN_SIDE_IS_ASK:
+                    furthest_close_price = max(trading_state.close_orders.values())
+                else:
+                    furthest_close_price = min(trading_state.close_orders.values())
+
+            if furthest_close_price is None:
+                if trading_state.open_orders_count > 0:
+                    if not OPEN_SIDE_IS_ASK:
+                        nearest_open = max(trading_state.open_orders.values())
+                    else:
+                        nearest_open = min(trading_state.open_orders.values())
+                else:
+                    nearest_open = trading_state.current_price - (
+                        step * (1 if not OPEN_SIDE_IS_ASK else -1)
+                    )
+                multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+                furthest_close_price = nearest_open + (step * multiplier)
 
             multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-            furthest_close_price = nearest_open + (
-                trading_state.active_grid_signle_price * multiplier
+            new_price = round(
+                furthest_close_price + (step * multiplier),
+                2,
             )
-
-        multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-        new_price = round(
-            furthest_close_price
-            + (trading_state.active_grid_signle_price * multiplier),
-            2,
-        )
 
         # 有效性检查
         if not OPEN_SIDE_IS_ASK:
             while new_price <= trading_state.current_price:
-                new_price = round(
-                    new_price + trading_state.active_grid_signle_price, 2
-                )
+                new_price = round(new_price + step, 2)
         else:
             while new_price >= trading_state.current_price:
-                new_price = round(
-                    new_price - trading_state.active_grid_signle_price, 2
-                )
+                new_price = round(new_price - step, 2)
 
         success, order_id = await trading_state.grid_trading.place_single_order(
             is_ask=CLOSE_SIDE_IS_ASK,
@@ -1105,6 +1119,7 @@ async def _replenish_config_close_orders():
                 trading_state.sell_orders[order_id] = new_price
             else:
                 trading_state.buy_orders[order_id] = new_price
+            close_prices_set.add(round(new_price, 2))
         else:
             logger.error(f"补充平仓单失败，退出循环。价格={new_price}")
             break
