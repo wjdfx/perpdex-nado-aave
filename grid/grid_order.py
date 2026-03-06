@@ -217,29 +217,39 @@ async def check_order_fills(orders: dict):
 
             # 如果订单已完全成交（状态为 closed/filled 或剩余为0）
             if (status in ["closed", "filled"] or is_fully_filled_or_cancelled) and filled_amount > 0:
-                trading_state.filled_count += 1
-                trading_state.last_trade_price = float(price)
-                
-                trading_state.last_filled_order_is_close_side = is_close_side_order
-                
-                if is_ask:
-                    if client_order_index in trading_state.sell_orders:
+                # 平仓单若已在同步路径记为成交，仅从列表移除，不重复更新状态与补单
+                synced_close = getattr(trading_state, "replenished_by_sync_close_order_ids", None)
+                if is_close_side_order and synced_close and client_order_index in synced_close:
+                    synced_close.discard(client_order_index)
+                    if is_ask and client_order_index in trading_state.sell_orders:
                         del trading_state.sell_orders[client_order_index]
-                        logger.info(
-                            f"从活跃卖单订单列表删除订单ID={client_order_index}, 价格={price}, "
-                            f"已成交={filled_amount}"
-                        )
-                        replenish = True
-                else:
-                    if client_order_index in trading_state.buy_orders:
+                    elif not is_ask and client_order_index in trading_state.buy_orders:
                         del trading_state.buy_orders[client_order_index]
-                        logger.info(
-                            f"从活跃买单订单列表删除订单ID={client_order_index}, 价格={price}, "
-                            f"已成交={filled_amount}"
-                        )
-                        replenish = True
+                    replenish = False
+                    logger.info("平仓单成交已在同步路径处理，跳过 fill 事件重复更新: ID=%s", client_order_index)
+                else:
+                    trading_state.filled_count += 1
+                    trading_state.last_trade_price = float(price)
+                    trading_state.last_filled_order_is_close_side = is_close_side_order
 
-                # 如果是平仓单（Close Side）成交
+                    if is_ask:
+                        if client_order_index in trading_state.sell_orders:
+                            del trading_state.sell_orders[client_order_index]
+                            logger.info(
+                                f"从活跃卖单订单列表删除订单ID={client_order_index}, 价格={price}, "
+                                f"已成交={filled_amount}"
+                            )
+                            replenish = True
+                    else:
+                        if client_order_index in trading_state.buy_orders:
+                            del trading_state.buy_orders[client_order_index]
+                            logger.info(
+                                f"从活跃买单订单列表删除订单ID={client_order_index}, 价格={price}, "
+                                f"已成交={filled_amount}"
+                            )
+                            replenish = True
+
+                # 如果是平仓单（Close Side）成交（且未在同步路径处理过）
                 if is_close_side_order and replenish:
                     # 按实际成交数量计算仓位变化，而不是固定的 GRID_AMOUNT
                     actual_filled = min(filled_amount, GRID_CONFIG["GRID_AMOUNT"])
@@ -584,18 +594,15 @@ async def _sync_current_orders(position_delta: float = 0.0):
     # 本轮 sync 内是否调用过 replenish_grid（会新挂配对单/补开仓单）；若调用过，后续赋值 state 时需合并而非覆盖，避免刚挂的单被 REST 快照覆盖导致下一轮 replenish(False) 误触大间距
     replenish_called_in_sync = False
 
-    # 处理消失的订单（用仓位增量判断开仓侧是否为成交）
-    # 注意：在 Nado 上，订单可能因为取消/系统清理/连接抖动而从快照消失。
-    # 若直接按“成交”处理会导致仓位和收益被误记，并触发连锁补单。
+    # 处理消失的订单
+    # 开仓单：从交易所消失视为成交，直接触发配对补卖单，不依赖仓位增量（REST 仓位常有延迟）
+    # 平仓单：从交易所消失视为成交，更新 filled_count / 收益 / 可用仓位，保证状态一致
     if disappeared_buy_orders or disappeared_sell_orders:
         logger.warning(
             f"检测到订单消失: 买单={len(disappeared_buy_orders)}, "
             f"卖单={len(disappeared_sell_orders)}"
         )
-        remaining_delta = float(position_delta)
         grid_amount = float(GRID_CONFIG["GRID_AMOUNT"])
-        # 必须满格才视为成交，避免部分成交被当成满格挂卖单，导致反向仓位（如 0.1 空单）
-        threshold = grid_amount
 
         disappeared_open_orders = (
             [(oid, previous_buy_orders[oid]) for oid in disappeared_buy_orders if oid in previous_buy_orders]
@@ -603,52 +610,53 @@ async def _sync_current_orders(position_delta: float = 0.0):
             else [(oid, previous_sell_orders[oid]) for oid in disappeared_sell_orders if oid in previous_sell_orders]
         )
         for oid, price in disappeared_open_orders:
-            if remaining_delta >= threshold:
-                logger.info(
-                    "消失的开仓单视为成交(仓位增量=%.2f): ID=%s, 价格=%s, 触发配对补单",
-                    remaining_delta,
-                    oid,
-                    price,
-                )
-                trading_state.last_filled_order_is_close_side = False
-                trading_state.last_trade_price = float(price)
-                trading_state.filled_count += 1
-                remaining_delta -= grid_amount
+            logger.info(
+                "消失的开仓单视为成交并触发配对补单: ID=%s, 价格=%s",
+                oid,
+                price,
+            )
+            trading_state.last_filled_order_is_close_side = False
+            trading_state.last_trade_price = float(price)
+            trading_state.filled_count += 1
 
-                from .grid_replenish import replenish_grid
+            from .grid_replenish import replenish_grid
 
-                if not hasattr(trading_state, "replenished_by_sync_open_order_ids"):
-                    trading_state.replenished_by_sync_open_order_ids = set()
-                trading_state.replenished_by_sync_open_order_ids.add(oid)
-                await replenish_grid(True, float(price))
-                replenish_called_in_sync = True
-            else:
-                candidate = (oid, price, time.time())
-                if not hasattr(trading_state, "pending_open_fill_candidates"):
-                    trading_state.pending_open_fill_candidates = []
-                trading_state.pending_open_fill_candidates.append(candidate)
-                logger.warning(
-                    "消失的开仓单加入待确认队列(仓位增量=%.2f): ID=%s, 价格=%s",
-                    remaining_delta,
-                    oid,
-                    price,
-                )
+            if not hasattr(trading_state, "replenished_by_sync_open_order_ids"):
+                trading_state.replenished_by_sync_open_order_ids = set()
+            trading_state.replenished_by_sync_open_order_ids.add(oid)
+            await replenish_grid(True, float(price))
+            replenish_called_in_sync = True
 
         disappeared_close = disappeared_sell_orders if not OPEN_SIDE_IS_ASK else disappeared_buy_orders
         if disappeared_close:
-            prices = (
-                [previous_sell_orders[oid] for oid in disappeared_close if oid in previous_sell_orders]
+            close_prices = (
+                [(oid, previous_sell_orders[oid]) for oid in disappeared_close if oid in previous_sell_orders]
                 if not OPEN_SIDE_IS_ASK
-                else [previous_buy_orders[oid] for oid in disappeared_close if oid in previous_buy_orders]
+                else [(oid, previous_buy_orders[oid]) for oid in disappeared_close if oid in previous_buy_orders]
             )
+            if not hasattr(trading_state, "replenished_by_sync_close_order_ids"):
+                trading_state.replenished_by_sync_close_order_ids = set()
+            for oid, price in close_prices:
+                trading_state.replenished_by_sync_close_order_ids.add(oid)
+                trading_state.last_filled_order_is_close_side = True
+                trading_state.last_trade_price = float(price)
+                trading_state.filled_count += 1
+                # 可用仓位由主循环用 REST 仓位重算，此处不扣减，避免被 check_current_orders 覆盖
+                once_profit = trading_state.base_grid_single_price * grid_amount
+                trading_state.active_profit += once_profit
+                trading_state.total_profit += once_profit
+                trading_state.available_reduce_profit += once_profit
+                logger.info(
+                    "消失的平仓单视为成交并更新状态: ID=%s, 价格=%s, 收益=%.2f",
+                    oid,
+                    price,
+                    once_profit,
+                )
             logger.warning(
-                "消失平仓单仅同步移除，不视为成交。IDs=%s, prices=%s",
+                "消失平仓单已记为成交: IDs=%s, 数量=%s",
                 sorted(disappeared_close),
-                prices,
+                len(close_prices),
             )
-            # 平仓单消失说明有卖单成交（或取消），将 last_filled_order_is_close_side 置为 True，
-            # 否则大间距开仓补单会因“上次成交是开仓侧”一直跳过（REST 路径不会像 WebSocket 那样更新该标志）
-            trading_state.last_filled_order_is_close_side = True
 
     # 检查 pause_position_exist 标志
     if len(trading_state.pause_orders) > 0:

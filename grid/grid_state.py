@@ -86,6 +86,7 @@ class GridTradingState:
 
         # 同步路径已按「消失开仓单」补过配对卖单的订单 ID，避免 fill 事件再次补单导致同价双卖单
         self.replenished_by_sync_open_order_ids: set = set()
+        self.replenished_by_sync_close_order_ids: set = set()  # 同步路径已记为成交的平仓单，避免 fill 事件重复处理
 
     @property
     def open_orders(self) -> dict[str, float]:
