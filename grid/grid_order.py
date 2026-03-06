@@ -615,6 +615,14 @@ async def _sync_current_orders(position_delta: float = 0.0):
                 oid,
                 price,
             )
+            # 从本地开仓订单映射中删除该订单，避免后续合并 state 时把已成交订单重新加入 buy_orders/sell_orders
+            if not OPEN_SIDE_IS_ASK:
+                if oid in trading_state.buy_orders:
+                    del trading_state.buy_orders[oid]
+            else:
+                if oid in trading_state.sell_orders:
+                    del trading_state.sell_orders[oid]
+
             trading_state.last_filled_order_is_close_side = False
             trading_state.last_trade_price = float(price)
             trading_state.filled_count += 1
@@ -637,6 +645,14 @@ async def _sync_current_orders(position_delta: float = 0.0):
             if not hasattr(trading_state, "replenished_by_sync_close_order_ids"):
                 trading_state.replenished_by_sync_close_order_ids = set()
             for oid, price in close_prices:
+                # 从本地平仓订单映射中删除该订单，后续不再将其视为活跃卖单
+                if not OPEN_SIDE_IS_ASK:
+                    if oid in trading_state.sell_orders:
+                        del trading_state.sell_orders[oid]
+                else:
+                    if oid in trading_state.buy_orders:
+                        del trading_state.buy_orders[oid]
+
                 trading_state.replenished_by_sync_close_order_ids.add(oid)
                 trading_state.last_filled_order_is_close_side = True
                 trading_state.last_trade_price = float(price)
