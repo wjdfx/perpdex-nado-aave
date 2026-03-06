@@ -205,7 +205,14 @@ async def _check_ema_reversion(df: pd.DataFrame) -> Tuple[bool, Dict, str]:
             f"(distance={distance:.4f}, -threshold={-threshold:.4f})"
         )
 
-    return is_triggered, {"distance": round(distance, 4), "threshold": threshold}, reason
+    # 详情中带上 close、ema，便于看 distance 来源：distance = (close - ema) / ema
+    details = {
+        "distance": round(distance, 4),
+        "threshold": threshold,
+        "close": round(current_price, 4),
+        "ema": round(ema_value, 4),
+    }
+    return is_triggered, details, reason
 
 
 async def is_rapid_market_move(df: pd.DataFrame, close: float) -> Tuple[bool, Dict]:
