@@ -572,9 +572,11 @@ async def _on_close_side_filled(trade_price: float = 0.0):
                 logger.error(f"平仓侧补充平仓单失败: is_ask={is_ask}, price={price}")
     
     if all_order_ids:
+        open_prices = [o[1] for o in open_orders]
+        close_prices = [c[1] for c in close_orders]
         logger.info(
             f"平仓侧被吃单补充订单成功: "
-            f"开仓单={len(open_orders)}, 平仓单={len(close_orders)}, "
+            f"开仓单={len(open_orders)}(价格={open_prices}), 平仓单={len(close_orders)}(价格={close_prices}), "
             f"订单ID={all_order_ids}"
         )
 
