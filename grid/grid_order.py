@@ -564,8 +564,9 @@ async def _sync_current_orders(position_delta: float = 0.0):
                         f"检测到占位订单部分成交: 价格={price}, "
                         f"原始={old_pause_positions[price]}, 剩余={remaining_amount}"
                     )
-                    # 用剩余数量更新 pause_positions（这样 available_position_size 计算才正确）
-                    trading_state.pause_positions[price] = remaining_amount
+                    # 未完全成交的平仓侧占位单视为未成交，不因部分成交更新 pause_positions
+                    # 保持原始数量冻结，直到完全成交或取消（做多/做空逻辑一致）
+                    trading_state.pause_positions[price] = old_pause_positions[price]
                     trading_state.pause_orders[order_id] = {
                         "price": price,
                         "amount": pause_amount,  # 保留原始数量用于后续处理
@@ -785,10 +786,11 @@ async def _handle_disappeared_order_with_fills(
                 del trading_state.pause_positions[pause_price]
             logger.info(f"占位订单完全成交，清理记录: 价格={pause_price}")
         else:
-            # 部分成交，更新剩余数量
+            # 部分成交后订单消失：释放冻结（做多/做空逻辑一致）
             remaining = initial_amount - filled_amount
-            trading_state.pause_positions[pause_price] = remaining
-            logger.info(f"占位订单部分成交，更新剩余: 价格={pause_price}, 剩余={remaining}")
+            if pause_price in trading_state.pause_positions:
+                del trading_state.pause_positions[pause_price]
+            logger.info(f"占位订单部分成交后消失: 价格={pause_price}, 已成交={filled_amount}, 释放冻结")
 
         # 如果所有占位订单都已清理，重置标志
         if len(trading_state.pause_orders) == 0:
