@@ -537,6 +537,11 @@ async def _on_close_side_filled(trade_price: float = 0.0):
             _is_ask, new_open_price, _ = new_open_order
             if round(new_open_price, 2) != round(trading_state.last_trade_price, 2):
                 open_orders.append(new_open_order)
+            else:
+                logger.info(
+                    "平仓侧被吃单补单: 开仓价 %.2f 与刚成交平仓价相同，跳过以避免同价 round-trip",
+                    new_open_price,
+                )
 
     # 2. 补充平仓单 (如果还有剩余仓位需要止盈)
     current_close_orders_volume = (
