@@ -530,10 +530,13 @@ async def _on_close_side_filled(trade_price: float = 0.0):
     close_orders = []
 
     # 1. 补充开仓单 (Buy Back)
+    # 若计算出的开仓价等于刚成交的平仓价，则跳过，避免同价买卖 round-trip 浪费手续费
     if not trading_state.grid_pause:
         new_open_order = await _calc_next_close_side_open_order()
         if new_open_order:
-            open_orders.append(new_open_order)
+            _is_ask, new_open_price, _ = new_open_order
+            if round(new_open_price, 2) != round(trading_state.last_trade_price, 2):
+                open_orders.append(new_open_order)
 
     # 2. 补充平仓单 (如果还有剩余仓位需要止盈)
     current_close_orders_volume = (
