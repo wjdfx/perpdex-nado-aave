@@ -180,13 +180,15 @@ async def _on_open_side_filled(trade_price: float = 0.0):
         if success:
             trading_state.paired_close_retry_block_until = 0.0
             trading_state.paired_close_target_price = 0.0
-            if is_ask:
-                trading_state.sell_orders[order_id] = final_price
-            else:
-                trading_state.buy_orders[order_id] = final_price
-            all_order_ids.append(order_id)
+            if order_id:
+                if is_ask:
+                    trading_state.sell_orders[order_id] = final_price
+                else:
+                    trading_state.buy_orders[order_id] = final_price
+                all_order_ids.append(order_id)
             logger.info(
-                f"开仓侧被吃单补充订单成功: 开仓单={len(open_orders)}, 配对平仓单=1, 订单ID={all_order_ids}"
+                f"开仓侧被吃单补充订单成功: 开仓单={len(open_orders)}, "
+                f"配对平仓单={'0(目标价已有，跳过)' if not order_id else '1'}, 订单ID={all_order_ids}"
             )
         else:
             trading_state.paired_close_target_price = float(final_price)
@@ -243,6 +245,17 @@ async def _place_paired_close_order_with_retry(
     while stage_index < len(stages):
         stage_name, stage_multiplier, stage_retry_limit = stages[stage_index]
         target_price = calc_target_price(stage_multiplier)
+
+        # 若目标价已有平仓单，则无需重复挂单，直接视为配对成功（避免同价买卖造成手续费损耗）
+        close_side_orders = (
+            trading_state.sell_orders if not OPEN_SIDE_IS_ASK else trading_state.buy_orders
+        )
+        if target_price in close_side_orders.values():
+            logger.info(
+                "配对平仓跳过: 目标价 %.2f 已有平仓单，无需重复挂单",
+                target_price,
+            )
+            return True, "", target_price
 
         # 若目标价已落后于当前价，阶段升级（LONG: target<=current, SHORT: target>=current）
         current_price = float(trading_state.current_price or 0.0)
@@ -1059,7 +1072,15 @@ async def _replenish_config_close_orders():
                     (not OPEN_SIDE_IS_ASK and candidate > trading_state.current_price)
                     or (OPEN_SIDE_IS_ASK and candidate < trading_state.current_price)
                 )
-                if current_ok and candidate not in close_prices_set:
+                # 若该价等于上次开仓成交价，补平仓单会形成同价买卖 round-trip，浪费手续费
+                if (
+                    current_ok
+                    and candidate not in close_prices_set
+                    and not (
+                        round(trading_state.last_trade_price, 2) == candidate
+                        and not trading_state.last_filled_order_is_close_side
+                    )
+                ):
                     new_price = candidate
                     break
 
