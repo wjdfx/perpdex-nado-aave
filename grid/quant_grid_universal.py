@@ -42,6 +42,34 @@ from .grid_state import (
 from .grid_position import check_position_limits
 
 # 导入订单管理模块
+
+
+def _get_grid_position(positions, exchange) -> Optional[dict]:
+    """
+    从全账户仓位中只取当前策略配置币种的仓位，排除其它币种（如 ETH）。
+    positions: 来自 get_account_info() 的 positions，可为 dict(symbol -> position) 或 list
+    exchange: 当前交易所 adapter，需有 product_id（如 Nado）
+    """
+    if not positions:
+        return None
+    target_product_id = getattr(exchange, "product_id", None)
+    if target_product_id is None:
+        if isinstance(positions, dict):
+            return next(iter(positions.values())) if positions else None
+        return positions[0] if isinstance(positions, list) and positions else None
+    if isinstance(positions, dict):
+        for pos in positions.values():
+            if pos.get("product_id") == target_product_id:
+                return pos
+        return None
+    if isinstance(positions, list):
+        for pos in positions:
+            if isinstance(pos, dict) and pos.get("product_id") == target_product_id:
+                return pos
+        return None
+    return None
+
+
 from .grid_order import (
     check_order_fills,
     check_current_orders,
@@ -106,24 +134,22 @@ async def on_account_all_orders_update(account_id: str, orders: dict):
 
 async def on_account_all_positions_update(account_id: str, positions: dict):
     """
-    处理账户所有仓位更新
-    
-    Args:
-        account_id: 账户ID
-        positions: 仓位数据
+    处理账户所有仓位更新（仅处理配置币种仓位，其它币种如 ETH 排除在计算外）
     """
     from .grid_state import trading_state, GRID_CONFIG
-    
+
     if len(trading_state.original_open_prices) == 0:
         logger.info("等待初始化完成...")
         return
-    for market_id, position in positions.items():
-        # 处理不同字段名的仓位
-        position_size = position.get(
-            "position", position.get("size", position.get("amount", 0))
-        )
-        position_size = round(abs(float(position_size)), 2)
-        await check_position_limits(position_size)
+    exchange = getattr(trading_state, "grid_trading", None) and trading_state.grid_trading.exchange
+    position = _get_grid_position(positions, exchange) if exchange else None
+    if position is None:
+        return
+    position_size = position.get(
+        "position", position.get("size", position.get("amount", 0))
+    )
+    position_size = round(abs(float(position_size)), 2)
+    await check_position_limits(position_size)
 
 
 async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
@@ -154,12 +180,9 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         )
 
         positions = account_info.get("positions", {})
-        if isinstance(positions, dict):
-            position = next(iter(positions.values())) if positions else None
-        else:
-            position = positions[0] if positions else None
+        position = _get_grid_position(positions, grid_trading.exchange)
 
-        # 仓位数据
+        # 仓位数据（仅配置币种，其它币种不计入）
         position_size = 0
         position_sign = 0
 
@@ -365,13 +388,10 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                     logger.info("获取账户信息失败")
                     continue
                 positions = account_info.get("positions", {})
+                exchange = trading_state.grid_trading.exchange if trading_state.grid_trading else None
+                position = _get_grid_position(positions, exchange) if exchange else None
 
-                if isinstance(positions, dict):
-                    position = next(iter(positions.values())) if positions else None
-                else:
-                    position = positions[0] if positions else None
-
-                # 处理仓位为空的情况
+                # 处理仓位为空的情况（仅配置币种，其它币种不计入）
                 if position is None:
                     position_size = 0
                     position_sign = 0
