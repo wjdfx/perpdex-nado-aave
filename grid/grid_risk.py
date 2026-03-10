@@ -407,8 +407,15 @@ async def _save_pause_position():
 
         # 占位订单都是平仓单，使用 reduce_only=True 避免部分成交后剩余订单消失
         # 以 ref_price 为主挂单；若 post-only 跨盘被拒，则用实时市价逐档上移/下移重试
-        def _is_post_only_cross(err: str) -> bool:
+        # 判定依据：1) Nado error_code（若已知）；2) 合约错误串 OCBM；3) 文案 post-only + cross
+        NADO_POST_ONLY_CROSS_ERROR_CODES = ()  # 从 Nado API 返回的 error_code，发现后可填入
+
+        def _is_post_only_cross(err: str, error_code: object) -> bool:
+            if error_code is not None and error_code in NADO_POST_ONLY_CROSS_ERROR_CODES:
+                return True
             e = (err or "").lower()
+            if "ocbm" in e:  # 合约 ERR_ORDERS_CANNOT_BE_MATCHED
+                return True
             return "post-only" in e and ("cross" in e or "crosses" in e)
 
         order_ids = []
@@ -422,7 +429,7 @@ async def _save_pause_position():
             placed = False
 
             while attempt <= max_retries:
-                success, order_id, err = await trading_state.grid_trading.place_single_order(
+                success, order_id, err, error_code = await trading_state.grid_trading.place_single_order(
                     is_ask=is_ask,
                     price=try_price,
                     amount=amount,
@@ -439,7 +446,7 @@ async def _save_pause_position():
                     break
 
                 # 失败：判断是否为 post-only 跨盘
-                if _is_post_only_cross(err) and market_price and market_price > 0:
+                if _is_post_only_cross(err, error_code) and market_price and market_price > 0:
                     attempt += 1
                     if attempt > max_retries:
                         logger.error(
@@ -453,16 +460,17 @@ async def _save_pause_position():
                         try_price = round(market_price - step * attempt, 2)
                     logger.info(
                         "占位订单 post-only 跨盘被拒，逐档重试: is_ask=%s, 原价=%.2f, 市价=%.2f, "
-                        "第%d/%d次尝试价=%.2f, 错误=%s",
+                        "第%d/%d次尝试价=%.2f, error_code=%s, 错误=%s",
                         is_ask, price, market_price, attempt, max_retries, try_price,
-                        (err[:80] + "..") if err and len(err) > 80 else (err or ""),
+                        error_code, (err[:80] + "..") if err and len(err) > 80 else (err or ""),
                     )
                     # 每次重试前刷新市价
                     market_price = trading_state.current_price or market_price
                 else:
                     logger.error(
-                        "占位订单创建失败(非跨盘): is_ask=%s, price=%.2f, amount=%s, 错误=%s",
-                        is_ask, try_price, amount, (err[:80] + "..") if err and len(err) > 80 else (err or ""),
+                        "占位订单创建失败(非跨盘): is_ask=%s, price=%.2f, amount=%s, error_code=%s, 错误=%s",
+                        is_ask, try_price, amount, error_code,
+                        (err[:80] + "..") if err and len(err) > 80 else (err or ""),
                     )
                     break
 
