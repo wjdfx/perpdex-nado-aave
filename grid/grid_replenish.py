@@ -284,7 +284,7 @@ async def _place_paired_close_order_with_retry(
             trading_state.paired_close_target_price = float(target_price)
             trading_state.paired_close_retry_block_until = time.time() + 20
 
-            success, order_id = await trading_state.grid_trading.place_single_order(
+            success, order_id, _ = await trading_state.grid_trading.place_single_order(
                 is_ask=is_ask,
                 price=target_price,
                 amount=amount,
@@ -577,7 +577,7 @@ async def _on_close_side_filled(trade_price: float = 0.0):
     # 再处理平仓单（使用 reduce_only=True）
     if close_orders:
         for is_ask, price, amount in close_orders:
-            success, order_id = await trading_state.grid_trading.place_single_order(
+            success, order_id, _ = await trading_state.grid_trading.place_single_order(
                 is_ask=is_ask,
                 price=price,
                 amount=amount,
@@ -816,7 +816,7 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
             logger.debug("大间距开仓补单: 跳过(做空), 新价%.2f <= 当前价%.2f", new_price, trading_state.current_price)
             return
 
-    success, order_id = await trading_state.grid_trading.place_single_order(
+    success, order_id, _ = await trading_state.grid_trading.place_single_order(
         is_ask=OPEN_SIDE_IS_ASK,
         price=new_price,
         amount=GRID_CONFIG["GRID_AMOUNT"],
@@ -892,7 +892,7 @@ async def _over_range_trailing_open_order():
 
         await _cancel_orders([str(order_id)])
 
-        success, new_order_id = await trading_state.grid_trading.place_single_order(
+        success, new_order_id, _ = await trading_state.grid_trading.place_single_order(
             is_ask=OPEN_SIDE_IS_ASK,
             price=new_price,
             amount=order_amount,
@@ -1025,7 +1025,7 @@ async def _replenish_config_open_orders():
                     new_price + trading_state.active_grid_signle_price, 2
                 )
         
-        success, order_id = await trading_state.grid_trading.place_single_order(
+        success, order_id, _ = await trading_state.grid_trading.place_single_order(
             is_ask=OPEN_SIDE_IS_ASK,
             price=new_price,
             amount=GRID_CONFIG["GRID_AMOUNT"],
@@ -1128,7 +1128,7 @@ async def _replenish_config_close_orders():
             while new_price >= trading_state.current_price:
                 new_price = round(new_price - step, 2)
 
-        success, order_id = await trading_state.grid_trading.place_single_order(
+        success, order_id, _ = await trading_state.grid_trading.place_single_order(
             is_ask=CLOSE_SIDE_IS_ASK,
             price=new_price,
             amount=GRID_CONFIG["GRID_AMOUNT"],

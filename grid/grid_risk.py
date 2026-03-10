@@ -361,52 +361,19 @@ async def _save_pause_position():
                 f"订单间距={price_step:.4f}"
             )
             
-            # 围绕回本价格均匀分布订单价格
+            # 围绕回本价格均匀分布订单价格（以 ref_price 为主，不做预调整）
             # 为确保回本价格上方挂单量 >= 下方挂单量，需要计算上下分布
             # 订单按价格从高到低（做多）或从低到高（做空）排列
             order_prices = _calculate_order_prices(
                 breakeven_price, price_step, order_count, order_amounts, multiplier
             )
 
-            # -----------------------------------------------------------
-            # 价格安全检查：确保所有挂单价格都优于当前价格
-            # 做多(卖单): 最低价必须 > 当前价
-            # 做空(买单): 最高价必须 < 当前价
-            # -----------------------------------------------------------
-            current_price = ref_price
-            safe_buffer = pause_grid_step * 0.5 # 安全缓冲距离
-            
-            if not OPEN_SIDE_IS_ASK: # 做多
-                min_price = min(order_prices)
-                if min_price <= current_price:
-                    offset = current_price - min_price + safe_buffer
-                    logger.info(f"占位订单价格修正(做多): 最低价{min_price} <= 当前价{current_price}, 整体上移{offset:.4f}")
-                    order_prices = [p + offset for p in order_prices]
-            else: # 做空
-                max_price = max(order_prices)
-                if max_price >= current_price:
-                    offset = max_price - current_price + safe_buffer # 正数
-                    logger.info(f"占位订单价格修正(做空): 最高价{max_price} >= 当前价{current_price}, 整体下移{offset:.4f}")
-                    order_prices = [p - offset for p in order_prices]
-            
             # 创建订单列表
             for price, amount in zip(order_prices, order_amounts):
                 orders.append((CLOSE_SIDE_IS_ASK, round(price, 2), round(amount, 2)))
         else:
-            # 不需要拆分，单个订单
-            # 同样应用价格检查
-            final_price = breakeven_price
-            current_price = ref_price
-            safe_buffer = pause_grid_step * 0.5
-
-            if not OPEN_SIDE_IS_ASK: # 做多
-                if final_price <= current_price:
-                    final_price = current_price + safe_buffer
-            else: # 做空
-                if final_price >= current_price:
-                    final_price = current_price - safe_buffer
-
-            orders.append((CLOSE_SIDE_IS_ASK, round(final_price, 2), round(total_position, 2)))
+            # 不需要拆分，单个订单（以 ref_price 为主，不做预调整）
+            orders.append((CLOSE_SIDE_IS_ASK, round(breakeven_price, 2), round(total_position, 2)))
 
         logger.info(
             "占位订单计划: 可用仓位=%s, 订单数=%s, 回本价=%s, 基础间距=%s, 详情=%s",
@@ -439,23 +406,71 @@ async def _save_pause_position():
              logger.info(f"订单调整完成，最终计划: {round(total_order_amount, 6)}")
 
         # 占位订单都是平仓单，使用 reduce_only=True 避免部分成交后剩余订单消失
+        # 以 ref_price 为主挂单；若 post-only 跨盘被拒，则用实时市价逐档上移/下移重试
+        def _is_post_only_cross(err: str) -> bool:
+            e = (err or "").lower()
+            return "post-only" in e and ("cross" in e or "crosses" in e)
+
         order_ids = []
+        market_price = trading_state.current_price or ref_price
+        step = pause_grid_step
+        max_retries = 15
+
         for is_ask, price, amount in orders:
-            success, order_id = await trading_state.grid_trading.place_single_order(
-                is_ask=is_ask,
-                price=price,
-                amount=amount,
-                reduce_only=True,  # 占位订单是平仓单，使用 Reduce Only
-            )
-            if success:
-                order_ids.append(order_id)
-            else:
-                logger.error(f"占位订单创建失败: is_ask={is_ask}, price={price}, amount={amount}")
-                # 如果失败，取消已创建的订单
+            try_price = round(price, 2)
+            attempt = 0
+            placed = False
+
+            while attempt <= max_retries:
+                success, order_id, err = await trading_state.grid_trading.place_single_order(
+                    is_ask=is_ask,
+                    price=try_price,
+                    amount=amount,
+                    reduce_only=True,
+                )
+                if success:
+                    order_ids.append(order_id)
+                    if attempt > 0:
+                        logger.info(
+                            "占位订单跨盘重试成功: is_ask=%s, 原价=%.2f, 最终价=%.2f, 尝试次数=%d",
+                            is_ask, price, try_price, attempt,
+                        )
+                    placed = True
+                    break
+
+                # 失败：判断是否为 post-only 跨盘
+                if _is_post_only_cross(err) and market_price and market_price > 0:
+                    attempt += 1
+                    if attempt > max_retries:
+                        logger.error(
+                            "占位订单 post-only 跨盘重试已达上限(%d次): is_ask=%s, 原价=%.2f, 市价=%.2f, 放弃",
+                            max_retries, is_ask, price, market_price,
+                        )
+                        break
+                    if not OPEN_SIDE_IS_ASK:  # 做多(卖单)：上移一档
+                        try_price = round(market_price + step * attempt, 2)
+                    else:  # 做空(买单)：下移一档
+                        try_price = round(market_price - step * attempt, 2)
+                    logger.info(
+                        "占位订单 post-only 跨盘被拒，逐档重试: is_ask=%s, 原价=%.2f, 市价=%.2f, "
+                        "第%d/%d次尝试价=%.2f, 错误=%s",
+                        is_ask, price, market_price, attempt, max_retries, try_price,
+                        (err[:80] + "..") if err and len(err) > 80 else (err or ""),
+                    )
+                    # 每次重试前刷新市价
+                    market_price = trading_state.current_price or market_price
+                else:
+                    logger.error(
+                        "占位订单创建失败(非跨盘): is_ask=%s, price=%.2f, amount=%s, 错误=%s",
+                        is_ask, try_price, amount, (err[:80] + "..") if err and len(err) > 80 else (err or ""),
+                    )
+                    break
+
+            if not placed:
                 if order_ids:
                     await trading_state.grid_trading.cancel_grid_orders(order_ids)
                 return
-        
+
         if order_ids:
             trading_state.pause_position_exist = True
             trading_state.available_position_size = 0.0

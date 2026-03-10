@@ -510,7 +510,7 @@ class NadoAdapter(ExchangeInterface):
         logger.error(f"REST 执行错误: {last_error}")
         return {"status": "failure", "error": str(last_error)}
 
-    async def place_single_order(self, is_ask: bool, price: float, amount: float, reduce_only: bool = False) -> Tuple[bool, str]:
+    async def place_single_order(self, is_ask: bool, price: float, amount: float, reduce_only: bool = False) -> Tuple[bool, str, str]:
         """
         Place single limit order.
         
@@ -600,13 +600,14 @@ class NadoAdapter(ExchangeInterface):
                 client_order_id = str(nonce & ((1 << 20) - 1))  # Use last 20 bits as ID
                 self.order_digests[client_order_id] = digest
                 logger.info(f"订单下单成功: digest={digest}")
-                return True, client_order_id
+                return True, client_order_id, ""
             else:
-                logger.error(f"下单失败: {response.get('error', '未知错误')}")
-                return False, ''
+                err = response.get('error', '未知错误')
+                logger.error(f"下单失败: {err}")
+                return False, '', str(err)
         except Exception as e:
             logger.error(f"place_single_order 错误: {e}", exc_info=True)
-            return False, ''
+            return False, '', str(e)
 
     async def place_multi_orders(self, orders: List[Tuple[bool, float, float]]) -> Tuple[bool, List[str]]:
         """
@@ -622,7 +623,7 @@ class NadoAdapter(ExchangeInterface):
             order_ids = []
             for i, (is_ask, price, amount) in enumerate(orders):
                 logger.debug(f"place_multi_orders: 下单 {i+1}/{len(orders)}: is_ask={is_ask}, price={price}, amount={amount}")
-                success, order_id = await self.place_single_order(is_ask, price, amount)
+                success, order_id, _ = await self.place_single_order(is_ask, price, amount)
                 if not success:
                     logger.error(f"place_multi_orders: 第 {i+1} 笔下单失败")
                     # Cancel previously placed orders

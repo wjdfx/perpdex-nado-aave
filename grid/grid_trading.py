@@ -135,7 +135,7 @@ class GridTrading:
             # 再处理平仓单（使用 reduce_only=True）
             if close_orders:
                 for is_ask, price, amount in close_orders:
-                    success, order_id = await self.place_single_order(
+                    success, order_id, _ = await self.place_single_order(
                         is_ask=is_ask,
                         price=price,
                         amount=amount,
@@ -174,7 +174,7 @@ class GridTrading:
         return await self.exchange.place_multi_orders(orders)
     
 
-    async def place_single_order(self, is_ask: bool, price: float, amount: float, reduce_only: bool = False) -> Tuple[bool, str]:
+    async def place_single_order(self, is_ask: bool, price: float, amount: float, reduce_only: bool = False) -> Tuple[bool, str, str]:
         """
         放置单个订单
 
@@ -185,7 +185,7 @@ class GridTrading:
             reduce_only: 是否仅减仓（平仓单使用，不能开新仓）
 
         Returns:
-            Tuple[bool, str]: (是否成功放置订单, 订单ID)
+            Tuple[bool, str, str]: (是否成功, 订单ID, 失败时的错误信息)
         """
         # Check if exchange supports reduce_only parameter
         if hasattr(self.exchange, 'place_single_order'):
@@ -193,7 +193,11 @@ class GridTrading:
             sig = inspect.signature(self.exchange.place_single_order)
             if 'reduce_only' in sig.parameters:
                 return await self.exchange.place_single_order(is_ask, price, amount, reduce_only=reduce_only)
-        return await self.exchange.place_single_order(is_ask, price, amount)
+        result = await self.exchange.place_single_order(is_ask, price, amount)
+        # 兼容只返回 2 个值的 exchange
+        if len(result) >= 3:
+            return result
+        return result[0], result[1], ""
             
     async def place_single_market_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
         """
