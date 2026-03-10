@@ -246,16 +246,14 @@ async def _place_paired_close_order_with_retry(
         stage_name, stage_multiplier, stage_retry_limit = stages[stage_index]
         target_price = calc_target_price(stage_multiplier)
 
-        # 若目标价附近（±0.5 步长内）已有平仓单，则无需重复挂单（避免 2071.97 与已有 2071.9 判为不同档又挂一单）
+        # 若目标价已有平仓单，则无需重复挂单，直接视为配对成功（避免同价买卖造成手续费损耗）
         close_side_orders = (
             trading_state.sell_orders if not OPEN_SIDE_IS_ASK else trading_state.buy_orders
         )
-        existing_prices = list(close_side_orders.values()) if close_side_orders else []
-        if any(existing_prices) and any(abs(target_price - p) < step * 0.5 for p in existing_prices):
+        if target_price in close_side_orders.values():
             logger.info(
-                "配对平仓跳过: 目标价 %.2f 与已有平仓单过近(步长=%.2f)，无需重复挂单",
+                "配对平仓跳过: 目标价 %.2f 已有平仓单，无需重复挂单",
                 target_price,
-                step,
             )
             return True, "", target_price
 
