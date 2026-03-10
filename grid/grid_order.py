@@ -366,13 +366,21 @@ async def check_current_orders(position_delta: float = 0.0):
         await _cancel_orders(cancel_orders)
 
     # 平仓侧订单不能超过持仓量 (Position Sizing check)，仅在有网格平仓单时修剪（占位订单不参与）
+    # 可承载数量用 (available+1e-9)/GRID_AMOUNT 取整，避免 0.3/0.1 浮点成 2 导致误修剪（3 买 3 卖 0.3 仓不应剪）
+    max_close_by_position = int(
+        (trading_state.available_position_size + 1e-9) / GRID_CONFIG["GRID_AMOUNT"]
+    )
     if (
         trading_state.close_orders_count > 0
-        and trading_state.close_orders_count * GRID_CONFIG["GRID_AMOUNT"]
-        > trading_state.available_position_size
+        and trading_state.close_orders_count > max_close_by_position
         and (time.time() - trading_state.start_time) > 60
     ):
-        logger.info("平仓单总量超过持仓，进行修剪")
+        logger.info(
+            "平仓单总量超过持仓，进行修剪: 平仓单数=%s, 可承载=%s, 可用仓位=%s",
+            trading_state.close_orders_count,
+            max_close_by_position,
+            round(trading_state.available_position_size, 6),
+        )
         cancel_orders = []
         
         # 取消最远的订单
@@ -383,9 +391,7 @@ async def check_current_orders(position_delta: float = 0.0):
             reverse=reverse_sort
         )
 
-        cancel_count = trading_state.close_orders_count - int(
-            trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"]
-        )
+        cancel_count = trading_state.close_orders_count - max_close_by_position
 
         if cancel_count > 0:
             for order_id, price in dict(sorted_orders).items():

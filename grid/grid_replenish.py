@@ -246,14 +246,16 @@ async def _place_paired_close_order_with_retry(
         stage_name, stage_multiplier, stage_retry_limit = stages[stage_index]
         target_price = calc_target_price(stage_multiplier)
 
-        # 若目标价已有平仓单，则无需重复挂单，直接视为配对成功（避免同价买卖造成手续费损耗）
+        # 若目标价附近（±0.5 步长内）已有平仓单，则无需重复挂单（避免 2071.97 与已有 2071.9 判为不同档又挂一单）
         close_side_orders = (
             trading_state.sell_orders if not OPEN_SIDE_IS_ASK else trading_state.buy_orders
         )
-        if target_price in close_side_orders.values():
+        existing_prices = list(close_side_orders.values()) if close_side_orders else []
+        if any(existing_prices) and any(abs(target_price - p) < step * 0.5 for p in existing_prices):
             logger.info(
-                "配对平仓跳过: 目标价 %.2f 已有平仓单，无需重复挂单",
+                "配对平仓跳过: 目标价 %.2f 与已有平仓单过近(步长=%.2f)，无需重复挂单",
                 target_price,
+                step,
             )
             return True, "", target_price
 
@@ -1043,22 +1045,24 @@ async def _replenish_config_open_orders():
 
 async def _replenish_config_close_orders():
     """
-    平仓侧补充不少于配置单的数量
-    
-    只向远距离补单。
+    平仓侧补充：仅在「当前没有任何平仓单」时按配置补单（如重启后）。
+    已有平仓单时，新卖单只应由「买单成交后的配对平仓」产生，不在此处按任意价插单。
     """
     trading_state = grid_state.trading_state
     GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
     
-    # 使用可承载的“整数平仓单数量”作为上限，避免浮点边界导致反复补/删同一档位订单。
     max_close_orders_by_position = int(
         (trading_state.available_position_size + 1e-9) / GRID_CONFIG["GRID_AMOUNT"]
     )
 
     step = trading_state.active_grid_signle_price
     close_prices_set = set(round(p, 2) for p in trading_state.close_orders.values()) if trading_state.close_orders_count > 0 else set()
+
+    # 已有平仓单时不再按“配置数量”补单，避免在中间插入与买单成交无关的价位
+    if trading_state.close_orders_count > 0:
+        return
 
     while (
         trading_state.close_orders_count < max_close_orders_by_position
