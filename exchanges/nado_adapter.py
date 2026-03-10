@@ -47,13 +47,13 @@ class NadoAdapter(ExchangeInterface):
         4: 14,  # BNB-PERP
     }
 
-    # Product ID to symbol mapping
+    # Product ID to symbol mapping（Nado mainnet：2=BTC 约71k, 4=ETH 约2k, 8=SOL, 26=AAVE）
     PRODUCT_ID_TO_SYMBOL = {
         0: "USDT0",
         1: "KBTC",
         2: "BTC-PERP",
         3: "PRODUCT_3",
-        4: "PRODUCT_4",
+        4: "ETH-PERP",
         5: "USDC",
         8: "SOL-PERP",
         10: "XRP-PERP",
