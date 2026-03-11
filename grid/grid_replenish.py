@@ -277,6 +277,12 @@ async def _place_paired_close_order_with_retry(
             )
             continue
 
+        def _is_post_only_cross(err: str, error_code: object) -> bool:
+            if error_code is not None and error_code == 2008:
+                return True
+            e = (err or "").lower()
+            return "post-only" in e and ("cross" in e or "crosses" in e)
+
         attempt = 0
         while stage_retry_limit is None or attempt < stage_retry_limit:
             attempt += 1
@@ -284,21 +290,42 @@ async def _place_paired_close_order_with_retry(
             trading_state.paired_close_target_price = float(target_price)
             trading_state.paired_close_retry_block_until = time.time() + 20
 
-            success, order_id, _, _ = await trading_state.grid_trading.place_single_order(
-                is_ask=is_ask,
-                price=target_price,
-                amount=amount,
-                reduce_only=True,
-            )
-            if success:
-                logger.info(
-                    "配对平仓成功: stage=%s, attempt=%s, order_id=%s, price=%s",
-                    stage_name,
-                    attempt,
-                    order_id,
-                    target_price,
+            try_price = target_price
+            max_price_retries = 8
+            for price_retry in range(max_price_retries):
+                success, order_id, err, error_code = await trading_state.grid_trading.place_single_order(
+                    is_ask=is_ask,
+                    price=try_price,
+                    amount=amount,
+                    reduce_only=True,
                 )
-                return True, order_id, target_price
+                if success:
+                    logger.info(
+                        "配对平仓成功: stage=%s, attempt=%s, order_id=%s, price=%s",
+                        stage_name,
+                        attempt,
+                        order_id,
+                        try_price,
+                    )
+                    return True, order_id, try_price
+
+                if _is_post_only_cross(err, error_code):
+                    current_price = float(trading_state.current_price or 0.0)
+                    if current_price and current_price > 0:
+                        if not OPEN_SIDE_IS_ASK:
+                            try_price = round(current_price + step * (price_retry + 1), 2)
+                        else:
+                            try_price = round(current_price - step * (price_retry + 1), 2)
+                        logger.info(
+                            "配对平仓 post-only 跨盘调价重试: 原价=%.2f, 市价=%.2f, 第%d档价=%.2f, error_code=%s",
+                            target_price,
+                            current_price,
+                            price_retry + 1,
+                            try_price,
+                            error_code,
+                        )
+                        continue
+                break
 
             last_error = "place_single_order_failed"
             logger.warning(
@@ -306,11 +333,10 @@ async def _place_paired_close_order_with_retry(
                 stage_name,
                 attempt,
                 "" if stage_retry_limit is None else f"/{stage_retry_limit}",
-                target_price,
+                try_price,
                 last_error,
             )
 
-            # 3x 阶段持续重试并节流日志
             if stage_retry_limit is None:
                 now = time.time()
                 if now - last_log_time >= stage3_log_interval_sec:
@@ -863,9 +889,15 @@ async def _over_range_trailing_open_order():
     if not OPEN_SIDE_IS_ASK:
         nearest = max(trading_state.open_orders.values())
         new_price = round(nearest + step, 2)
+        # 做多：新买单必须低于市价；若算出的价已≥当前价，改为当前价下方一档，实现“跟价”挂单
+        if new_price >= current_price:
+            new_price = round(current_price - step, 2)
     else:
         nearest = min(trading_state.open_orders.values())
         new_price = round(nearest - step, 2)
+        # 做空：新卖单必须高于市价；若算出的价已≤当前价，改为当前价上方一档
+        if new_price <= current_price:
+            new_price = round(current_price + step, 2)
 
     if new_price <= 0:
         return

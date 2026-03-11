@@ -408,7 +408,7 @@ async def _save_pause_position():
         # 占位订单都是平仓单，使用 reduce_only=True 避免部分成交后剩余订单消失
         # 以 ref_price 为主挂单；若 post-only 跨盘被拒，则用实时市价逐档上移/下移重试
         # 判定依据：1) Nado error_code（若已知）；2) 合约错误串 OCBM；3) 文案 post-only + cross
-        NADO_POST_ONLY_CROSS_ERROR_CODES = ()  # 从 Nado API 返回的 error_code，发现后可填入
+        NADO_POST_ONLY_CROSS_ERROR_CODES = (2008,)  # Nado: post-only and crosses the book
 
         def _is_post_only_cross(err: str, error_code: object) -> bool:
             if error_code is not None and error_code in NADO_POST_ONLY_CROSS_ERROR_CODES:
