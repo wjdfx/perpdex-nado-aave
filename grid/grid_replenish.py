@@ -283,6 +283,12 @@ async def _place_paired_close_order_with_retry(
             e = (err or "").lower()
             return "post-only" in e and ("cross" in e or "crosses" in e)
 
+        def _is_reduce_only_increases_position(err: str, error_code: object) -> bool:
+            """仓位为 0 时挂 reduce_only 会被拒，不再重试"""
+            if error_code is not None and error_code == 2064:
+                return True
+            return err and "reduce only" in (err or "").lower() and "increases" in (err or "").lower()
+
         attempt = 0
         while stage_retry_limit is None or attempt < stage_retry_limit:
             attempt += 1
@@ -308,6 +314,12 @@ async def _place_paired_close_order_with_retry(
                         try_price,
                     )
                     return True, order_id, try_price
+
+                if _is_reduce_only_increases_position(err, error_code):
+                    logger.info(
+                        "配对平仓跳过: 无仓可平(error_code=2064/Reduce only increases position)，不再重试"
+                    )
+                    return True, "", try_price
 
                 if _is_post_only_cross(err, error_code):
                     current_price = float(trading_state.current_price or 0.0)
