@@ -352,6 +352,19 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
         risk_binance_symbol=CONFIG["RISK_BINANCE_SYMBOL"],
     )
 
+    # 明确打印风控数据源与交易标的，便于核对「配置是 ENA 但实际拿到 XLP」等不一致
+    binance_symbol = CONFIG.get("RISK_BINANCE_SYMBOL", "")
+    logger.info(
+        "标的核对: 风控/K线数据源=Binance %s | 交易标的=Nado product_id=%s (target_symbol=%s)",
+        binance_symbol or "未配置",
+        getattr(exchange, "product_id", "?"),
+        getattr(exchange, "target_symbol", "?"),
+    )
+    if _exchange_type == "nado" and hasattr(exchange, "PRODUCT_ID_TO_SYMBOL"):
+        pid = getattr(exchange, "product_id", None)
+        name = exchange.PRODUCT_ID_TO_SYMBOL.get(pid, "未知") if pid is not None else "未知"
+        logger.info("标的核对: Nado product_id=%s 当前映射合约名=%s（若与预期不符请检查 NADO_PRODUCT_ID/NADO_SYMBOL）", pid, name)
+
     proxy_config = PROXY_URL if PROXY_URL else None
     await exchange.subscribe(
         {
