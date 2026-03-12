@@ -650,12 +650,12 @@ async def _sync_current_orders(position_delta: float = 0.0):
                 continue
             if oid not in trading_state.rest_disappeared_open_candidates:
                 trading_state.rest_disappeared_open_candidates[oid] = (float(price), now)
-            logger.info(
-                "[REST] 检测到开仓单消失(待确认): ID=%s, 价格=%s, confirm_sec=%.2f",
-                oid,
-                price,
-                confirm_sec,
-            )
+                logger.info(
+                    "[REST] 检测到开仓单消失(待确认): ID=%s, 价格=%s, confirm_sec=%.2f",
+                    oid,
+                    price,
+                    confirm_sec,
+                )
                 continue
             first_price, first_ts = trading_state.rest_disappeared_open_candidates.get(oid, (float(price), now))
             if now - float(first_ts) >= confirm_sec:
@@ -668,12 +668,12 @@ async def _sync_current_orders(position_delta: float = 0.0):
                 continue
             if oid not in trading_state.rest_disappeared_close_candidates:
                 trading_state.rest_disappeared_close_candidates[oid] = (float(price), now)
-            logger.info(
-                "[REST] 检测到平仓单消失(待确认): ID=%s, 价格=%s, confirm_sec=%.2f",
-                oid,
-                price,
-                confirm_sec,
-            )
+                logger.info(
+                    "[REST] 检测到平仓单消失(待确认): ID=%s, 价格=%s, confirm_sec=%.2f",
+                    oid,
+                    price,
+                    confirm_sec,
+                )
                 continue
             _, first_ts = trading_state.rest_disappeared_close_candidates.get(oid, (float(price), now))
             if now - float(first_ts) >= confirm_sec:
