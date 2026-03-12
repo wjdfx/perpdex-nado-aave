@@ -615,30 +615,33 @@ async def _sync_current_orders(position_delta: float = 0.0):
             if not OPEN_SIDE_IS_ASK
             else [(oid, previous_sell_orders[oid]) for oid in disappeared_sell_orders if oid in previous_sell_orders]
         )
-        for oid, price in disappeared_open_orders:
-            logger.info(
-                "消失的开仓单视为成交并触发配对补单: ID=%s, 价格=%s",
-                oid,
-                price,
-            )
-            # 从本地开仓订单映射中删除该订单，避免后续合并 state 时把已成交订单重新加入 buy_orders/sell_orders
-            if not OPEN_SIDE_IS_ASK:
-                if oid in trading_state.buy_orders:
-                    del trading_state.buy_orders[oid]
-            else:
-                if oid in trading_state.sell_orders:
-                    del trading_state.sell_orders[oid]
+        # 根因修复：合并处理，只触发一次 replenish，传入所有成交价（内部按价格容差去重，避免重复挂卖单）
+        if disappeared_open_orders:
+            fill_prices = []
+            for oid, price in disappeared_open_orders:
+                logger.info(
+                    "消失的开仓单视为成交: ID=%s, 价格=%s",
+                    oid,
+                    price,
+                )
+                if not OPEN_SIDE_IS_ASK:
+                    if oid in trading_state.buy_orders:
+                        del trading_state.buy_orders[oid]
+                else:
+                    if oid in trading_state.sell_orders:
+                        del trading_state.sell_orders[oid]
+                if not hasattr(trading_state, "replenished_by_sync_open_order_ids"):
+                    trading_state.replenished_by_sync_open_order_ids = set()
+                trading_state.replenished_by_sync_open_order_ids.add(oid)
+                fill_prices.append(float(price))
 
             trading_state.last_filled_order_is_close_side = False
-            trading_state.last_trade_price = float(price)
-            trading_state.filled_count += 1
+            trading_state.last_trade_price = float(fill_prices[-1])
+            trading_state.filled_count += len(fill_prices)
 
             from .grid_replenish import replenish_grid
 
-            if not hasattr(trading_state, "replenished_by_sync_open_order_ids"):
-                trading_state.replenished_by_sync_open_order_ids = set()
-            trading_state.replenished_by_sync_open_order_ids.add(oid)
-            await replenish_grid(True, float(price))
+            await replenish_grid(True, trade_price=fill_prices[-1], trade_prices=fill_prices)
             replenish_called_in_sync = True
 
         disappeared_close = disappeared_sell_orders if not OPEN_SIDE_IS_ASK else disappeared_buy_orders

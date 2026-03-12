@@ -55,15 +55,20 @@ def calculate_grid_prices(
     return open_prices
 
 
-async def replenish_grid(filled_signal: bool, trade_price: float = 0.0):
+async def replenish_grid(
+    filled_signal: bool,
+    trade_price: float = 0.0,
+    trade_prices: Optional[List[float]] = None,
+):
     """
     补充网格订单逻辑
-    
+
     基于原始订单价格分布和当前价格，计算补充订单的价格和方向
-    
+
     Args:
         filled_signal: 是否有订单成交
-        trade_price: 成交价格
+        trade_price: 成交价格（单笔时使用）
+        trade_prices: 多笔成交价列表（sync 批量消失单时传入，内部按价格容差去重）
     """
     trading_state = grid_state.trading_state
     
@@ -80,8 +85,11 @@ async def replenish_grid(filled_signal: bool, trade_price: float = 0.0):
 
     try:
         if filled_signal:
-            # 开仓侧被吃单 (e.g. Long Buy filled)
-            await _on_open_side_filled(trade_price)
+            # 开仓侧被吃单：支持批量成交价，逐笔补单（_place_paired_close 内 step 容差去重）
+            prices = trade_prices if trade_prices else ([trade_price] if trade_price else [])
+            for p in prices:
+                if float(p) > 0:
+                    await _on_open_side_filled(float(p))
             # 平仓侧被吃单 (e.g. Long Sell filled)
             await _on_close_side_filled(trade_price)
 
@@ -246,14 +254,16 @@ async def _place_paired_close_order_with_retry(
         stage_name, stage_multiplier, stage_retry_limit = stages[stage_index]
         target_price = calc_target_price(stage_multiplier)
 
-        # 若目标价已有平仓单，则无需重复挂单，直接视为配对成功（避免同价买卖造成手续费损耗）
+        # 若目标价 step×1 内已有平仓单，则无需重复挂单（价格容差，避免相邻档重复挂卖单）
         close_side_orders = (
             trading_state.sell_orders if not OPEN_SIDE_IS_ASK else trading_state.buy_orders
         )
-        if target_price in close_side_orders.values():
+        existing_prices = list(close_side_orders.values())
+        if any(abs(float(p) - target_price) <= step for p in existing_prices):
             logger.info(
-                "配对平仓跳过: 目标价 %.2f 已有平仓单，无需重复挂单",
+                "配对平仓跳过: 目标价 %.2f 的 step(%.2f) 内已有平仓单，无需重复挂单",
                 target_price,
+                step,
             )
             return True, "", target_price
 
