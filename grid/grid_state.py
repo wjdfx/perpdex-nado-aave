@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import math
 import time
 from typing import Dict, List, Optional
 import pandas as pd
@@ -152,6 +153,24 @@ def round_price_to_precision(price: float) -> float:
     if prec <= 0:
         return round(price, 2)
     return round(round(price / prec) * prec, 6)
+
+
+def format_price_for_display(price: float) -> str:
+    """
+    按 PRICE_PRECISION 将价格格式化为日志可读字符串。
+    用于日志中的价格、间距(step)、gap 等，与配置精度一致。
+    """
+    p = round_price_to_precision(price)
+    if GRID_CONFIG is None or "PRICE_PRECISION" not in GRID_CONFIG:
+        return f"{p:.2f}"
+    prec = float(GRID_CONFIG["PRICE_PRECISION"])
+    if prec >= 1:
+        return str(int(round(p)))
+    if prec <= 0:
+        return f"{p:.2f}"
+    decimals = min(6, max(1, -int(round(math.log10(prec)))))
+    s = f"{p:.{decimals}f}"
+    return s.rstrip("0").rstrip(".") if "." in s else s
 
 
 async def seconds_formatter(seconds: int) -> str:

@@ -10,7 +10,7 @@ import time
 from typing import List, Optional, Tuple
 
 from . import grid_state
-from .grid_state import round_price_to_precision
+from .grid_state import format_price_for_display, round_price_to_precision
 
 logger = logging.getLogger(__name__)
 
@@ -268,9 +268,9 @@ async def _place_paired_close_order_with_retry(
         existing_prices = list(close_side_orders.values())
         if any(abs(float(p) - target_price) <= step for p in existing_prices):
             logger.info(
-                "配对平仓跳过: 目标价 %.2f 的 step(%.2f) 内已有平仓单，无需重复挂单",
-                target_price,
-                step,
+                "配对平仓跳过: 目标价 %s 的 step(%s) 内已有平仓单，无需重复挂单",
+                format_price_for_display(target_price),
+                format_price_for_display(step),
             )
             return True, "", target_price
 
@@ -288,9 +288,9 @@ async def _place_paired_close_order_with_retry(
                 "配对平仓阶段升级: from=%s to=%s, reason=target_behind_market, fill=%s, step=%s, current=%s",
                 old_stage,
                 new_stage,
-                round(float(fill_price), 6),
-                round(step, 6),
-                round(current_price, 6),
+                format_price_for_display(float(fill_price)),
+                format_price_for_display(step),
+                format_price_for_display(current_price),
             )
             continue
 
@@ -346,11 +346,11 @@ async def _place_paired_close_order_with_retry(
                         else:
                             try_price = round_price_to_precision(current_price - step * (price_retry + 1))
                         logger.info(
-                            "配对平仓 post-only 跨盘调价重试: 原价=%.2f, 市价=%.2f, 第%d档价=%.2f, error_code=%s",
-                            target_price,
-                            current_price,
+                            "配对平仓 post-only 跨盘调价重试: 原价=%s, 市价=%s, 第%d档价=%s, error_code=%s",
+                            format_price_for_display(target_price),
+                            format_price_for_display(current_price),
                             price_retry + 1,
-                            try_price,
+                            format_price_for_display(try_price),
                             error_code,
                         )
                         continue
@@ -389,8 +389,8 @@ async def _place_paired_close_order_with_retry(
                 "配对平仓阶段升级: from=%s to=%s, reason=retry_exhausted, fill=%s, step=%s",
                 old_stage,
                 new_stage,
-                round(float(fill_price), 6),
-                round(step, 6),
+                format_price_for_display(float(fill_price)),
+                format_price_for_display(step),
             )
         else:
             # 理论上不会到这里（3x为无限重试），防御性返回
@@ -593,8 +593,8 @@ async def _on_close_side_filled(trade_price: float = 0.0):
                 open_orders.append(new_open_order)
             else:
                 logger.info(
-                    "平仓侧被吃单补单: 开仓价 %.2f 与刚成交平仓价相同，跳过以避免同价 round-trip",
-                    new_open_price,
+                    "平仓侧被吃单补单: 开仓价 %s 与刚成交平仓价相同，跳过以避免同价 round-trip",
+                    format_price_for_display(new_open_price),
                 )
 
     # 2. 补充平仓单 (如果还有剩余仓位需要止盈)
@@ -780,8 +780,12 @@ async def _over_range_replenish_order():
     gap_threshold = gap_multiplier * trading_state.active_grid_signle_price
 
     logger.debug(
-        "大间距检测: gap=%.4f, threshold=%.4f, nearest_open=%.2f, nearest_close=%.2f, 当前价=%.2f",
-        gap, gap_threshold, nearest_open_price, nearest_close_price, trading_state.current_price,
+        "大间距检测: gap=%s, threshold=%s, nearest_open=%s, nearest_close=%s, 当前价=%s",
+        format_price_for_display(gap),
+        format_price_for_display(gap_threshold),
+        format_price_for_display(nearest_open_price),
+        format_price_for_display(nearest_close_price),
+        format_price_for_display(trading_state.current_price or 0),
     )
 
     if gap > gap_threshold:
@@ -794,8 +798,11 @@ async def _over_range_replenish_order():
         can_add_close = trading_state.available_position_size >= need_for_one_more
 
         logger.info(
-            "大间距触发: gap=%.4f > threshold=%.4f, 开仓数=%s, 平仓数=%s",
-            gap, gap_threshold, trading_state.open_orders_count, trading_state.close_orders_count,
+            "大间距触发: gap=%s > threshold=%s, 开仓数=%s, 平仓数=%s",
+            format_price_for_display(gap),
+            format_price_for_display(gap_threshold),
+            trading_state.open_orders_count,
+            trading_state.close_orders_count,
         )
 
         tried_open = False
@@ -804,32 +811,33 @@ async def _over_range_replenish_order():
         # 1. 补充开仓侧（仅当有卖单时，无卖单时由上方追单处理）
         if trading_state.close_orders_count > 0:
             if dist_to_open > min_dist:
-                logger.info("大间距: 尝试补充开仓侧, dist_to_open=%.4f", dist_to_open)
+                logger.info("大间距: 尝试补充开仓侧, dist_to_open=%s", format_price_for_display(dist_to_open))
                 await _over_range_replenish_open_order(nearest_open_price)
                 tried_open = True
             else:
-                logger.debug("大间距: 跳过开仓侧补单, dist_to_open=%.4f <= 1.5*step", dist_to_open)
+                logger.debug("大间距: 跳过开仓侧补单, dist_to_open=%s <= 1.5*step", format_price_for_display(dist_to_open))
 
         # 2. 补充平仓侧：可用须能容纳「当前网格平仓单数 + 1」格，否则补单会导致可平仓量>持仓（做多变净空）
         if dist_to_close > min_dist:
             if can_add_close:
-                logger.info("大间距: 尝试补充平仓侧, dist_to_close=%.4f", dist_to_close)
+                logger.info("大间距: 尝试补充平仓侧, dist_to_close=%s", format_price_for_display(dist_to_close))
                 await _over_range_replenish_close_order(nearest_open_price)
                 tried_close = True
             else:
                 logger.debug(
-                    "大间距: 跳过平仓侧补单, 可用=%.2f < need=%.2f",
-                    trading_state.available_position_size, need_for_one_more,
+                    "大间距: 跳过平仓侧补单, 可用=%s < need=%s",
+                    format_price_for_display(trading_state.available_position_size),
+                    format_price_for_display(need_for_one_more),
                 )
 
         if not tried_open and not tried_close:
             reasons = []
             if trading_state.close_orders_count > 0 and dist_to_open <= min_dist:
-                reasons.append("开仓侧: 当前价距最近开仓价=%.4f <= 1.5*step=%.4f" % (dist_to_open, min_dist))
+                reasons.append("开仓侧: 当前价距最近开仓价=%s <= 1.5*step=%s" % (format_price_for_display(dist_to_open), format_price_for_display(min_dist)))
             if dist_to_close <= min_dist:
-                reasons.append("平仓侧: 当前价距最近平仓价=%.4f <= 1.5*step=%.4f" % (dist_to_close, min_dist))
+                reasons.append("平仓侧: 当前价距最近平仓价=%s <= 1.5*step=%s" % (format_price_for_display(dist_to_close), format_price_for_display(min_dist)))
             if dist_to_close > min_dist and not can_add_close:
-                reasons.append("平仓侧: 可用仓位=%.2f < 需再挂一格=%.2f" % (trading_state.available_position_size, need_for_one_more))
+                reasons.append("平仓侧: 可用仓位=%s < 需再挂一格=%s" % (format_price_for_display(trading_state.available_position_size), format_price_for_display(need_for_one_more)))
             logger.info("大间距触发但未补单: %s", "; ".join(reasons))
 
 
@@ -856,17 +864,17 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
 
     # 若该价格已有开仓单（例如初始化刚挂的），则不再补，避免重复挂单
     if new_price in trading_state.open_orders.values():
-        logger.debug("大间距开仓补单: 跳过, 价格%.2f已有开仓单", new_price)
+        logger.debug("大间距开仓补单: 跳过, 价格%s已有开仓单", format_price_for_display(new_price))
         return
 
     # 检查当前价格
     if not OPEN_SIDE_IS_ASK:
         if new_price >= trading_state.current_price:
-            logger.debug("大间距开仓补单: 跳过(做多), 新价%.2f >= 当前价%.2f", new_price, trading_state.current_price)
+            logger.debug("大间距开仓补单: 跳过(做多), 新价%s >= 当前价%s", format_price_for_display(new_price), format_price_for_display(trading_state.current_price or 0))
             return
     else:
         if new_price <= trading_state.current_price:
-            logger.debug("大间距开仓补单: 跳过(做空), 新价%.2f <= 当前价%.2f", new_price, trading_state.current_price)
+            logger.debug("大间距开仓补单: 跳过(做空), 新价%s <= 当前价%s", format_price_for_display(new_price), format_price_for_display(trading_state.current_price or 0))
             return
 
     success, order_id, _, _ = await trading_state.grid_trading.place_single_order(
@@ -879,7 +887,7 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
             trading_state.sell_orders[order_id] = new_price
         else:
             trading_state.buy_orders[order_id] = new_price
-        logger.info(f"大间距开仓补单成功: {order_id}, {new_price}")
+        logger.info("大间距开仓补单成功: %s, %s", order_id, format_price_for_display(new_price))
 
 
 async def _over_range_trailing_open_order():
@@ -963,10 +971,14 @@ async def _over_range_trailing_open_order():
                 trading_state.buy_orders[new_order_id] = new_price
             logger.info(
                 "大间距追单成功: 原订单ID=%s, 新订单ID=%s, 原价格=%s, 新价格=%s, 当前价=%s",
-                order_id, new_order_id, order_price, new_price, current_price,
+                order_id,
+                new_order_id,
+                format_price_for_display(order_price),
+                format_price_for_display(new_price),
+                format_price_for_display(current_price),
             )
         else:
-            logger.warning("大间距追单重新下单失败: 原订单ID=%s, 新价格=%s", order_id, new_price)
+            logger.warning("大间距追单重新下单失败: 原订单ID=%s, 新价格=%s", order_id, format_price_for_display(new_price))
     except Exception as e:
         logger.error("大间距追单异常: 订单ID=%s, 错误=%s", order_id, e, exc_info=True)
 
@@ -1030,7 +1042,7 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
             trading_state.sell_orders[order_id] = new_price
         else:
             trading_state.buy_orders[order_id] = new_price
-        logger.info(f"大间距平仓补单成功: {order_id}, {new_price}")
+        logger.info("大间距平仓补单成功: %s, %s", order_id, format_price_for_display(new_price))
 
 
 async def _replenish_config_open_orders():

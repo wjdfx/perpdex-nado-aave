@@ -11,6 +11,7 @@ import pandas as pd
 
 from . import grid_state
 from . import quota
+from .grid_state import format_price_for_display
 
 logger = logging.getLogger(__name__)
 
@@ -355,10 +356,13 @@ async def _save_pause_position():
             price_step = pause_grid_step * avg_multiple
             
             logger.info(
-                f"占位订单拆分计算: 总仓位={total_position}, 基础量={grid_amount}, "
-                f"订单数={order_count}, 平均倍数={avg_multiple:.2f}, "
-                f"占位价差={pause_grid_step}, "
-                f"订单间距={price_step:.4f}"
+                "占位订单拆分计算: 总仓位=%s, 基础量=%s, 订单数=%s, 平均倍数=%.2f, 占位价差=%s, 订单间距=%s",
+                total_position,
+                grid_amount,
+                order_count,
+                avg_multiple,
+                format_price_for_display(pause_grid_step),
+                format_price_for_display(price_step),
             )
             
             # 围绕回本价格均匀分布订单价格（以 ref_price 为主，不做预调整）
@@ -381,8 +385,8 @@ async def _save_pause_position():
             "占位订单计划: 可用仓位=%s, 订单数=%s, 回本价=%s, 基础间距=%s, 详情=%s",
             round(total_position, 6),
             len(orders),
-            round(breakeven_price, 6),
-            round(pause_grid_step, 6),
+            format_price_for_display(breakeven_price),
+            format_price_for_display(pause_grid_step),
             orders,
         )
 
@@ -442,8 +446,8 @@ async def _save_pause_position():
                     order_ids.append(order_id)
                     if attempt > 0:
                         logger.info(
-                            "占位订单跨盘重试成功: is_ask=%s, 原价=%.2f, 最终价=%.2f, 尝试次数=%d",
-                            is_ask, price, try_price, attempt,
+                            "占位订单跨盘重试成功: is_ask=%s, 原价=%s, 最终价=%s, 尝试次数=%d",
+                            is_ask, format_price_for_display(price), format_price_for_display(try_price), attempt,
                         )
                     placed = True
                     break
@@ -453,8 +457,8 @@ async def _save_pause_position():
                     attempt += 1
                     if attempt > max_retries:
                         logger.error(
-                            "占位订单 post-only 跨盘重试已达上限(%d次): is_ask=%s, 原价=%.2f, 市价=%.2f, 放弃",
-                            max_retries, is_ask, price, market_price,
+                            "占位订单 post-only 跨盘重试已达上限(%d次): is_ask=%s, 原价=%s, 市价=%s, 放弃",
+                            max_retries, is_ask, format_price_for_display(price), format_price_for_display(market_price),
                         )
                         break
                     if not OPEN_SIDE_IS_ASK:  # 做多(卖单)：上移一档
@@ -462,17 +466,26 @@ async def _save_pause_position():
                     else:  # 做空(买单)：下移一档
                         try_price = round_price_to_precision(market_price - step * attempt)
                     logger.info(
-                        "占位订单 post-only 跨盘被拒，逐档重试: is_ask=%s, 原价=%.2f, 市价=%.2f, "
-                        "第%d/%d次尝试价=%.2f, error_code=%s, 错误=%s",
-                        is_ask, price, market_price, attempt, max_retries, try_price,
-                        error_code, (err[:80] + "..") if err and len(err) > 80 else (err or ""),
+                        "占位订单 post-only 跨盘被拒，逐档重试: is_ask=%s, 原价=%s, 市价=%s, "
+                        "第%d/%d次尝试价=%s, error_code=%s, 错误=%s",
+                        is_ask,
+                        format_price_for_display(price),
+                        format_price_for_display(market_price),
+                        attempt,
+                        max_retries,
+                        format_price_for_display(try_price),
+                        error_code,
+                        (err[:80] + "..") if err and len(err) > 80 else (err or ""),
                     )
                     # 每次重试前刷新市价
                     market_price = trading_state.current_price or market_price
                 else:
                     logger.error(
-                        "占位订单创建失败(非跨盘): is_ask=%s, price=%.2f, amount=%s, error_code=%s, 错误=%s",
-                        is_ask, try_price, amount, error_code,
+                        "占位订单创建失败(非跨盘): is_ask=%s, price=%s, amount=%s, error_code=%s, 错误=%s",
+                        is_ask,
+                        format_price_for_display(try_price),
+                        amount,
+                        error_code,
                         (err[:80] + "..") if err and len(err) > 80 else (err or ""),
                     )
                     break

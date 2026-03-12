@@ -9,6 +9,7 @@ import time
 from typing import Optional
 
 from . import grid_state
+from .grid_state import format_price_for_display
 
 logger = logging.getLogger(__name__)
 
@@ -189,14 +190,14 @@ async def check_position_limits(position_size: float):
             >= alert_log_interval_sec
         )
         if should_log:
-            target_step = round(trading_state.base_grid_single_price * 2, 6)
+            target_step = trading_state.base_grid_single_price * 2
             logger.warning(
                 "⚠️ 仓位达到预警阈值，触发开仓侧间距放大: 当前仓位=%s, 预警阈值=%s, 基础间距=%s, 当前动态间距=%s, 目标间距(基础*2)=%s",
                 round(position_size, 6),
                 round(alert_pos, 6),
-                round(trading_state.base_grid_single_price, 6),
-                round(trading_state.active_grid_signle_price, 6),
-                target_step,
+                format_price_for_display(trading_state.base_grid_single_price),
+                format_price_for_display(trading_state.active_grid_signle_price),
+                format_price_for_display(target_step),
             )
             trading_state.last_alert_spread_log_time = now
     else:
@@ -214,7 +215,7 @@ async def check_position_limits(position_size: float):
                 "✅ 仓位低于预警阈值，恢复基础间距: 当前仓位=%s, 预警阈值=%s, 基础间距=%s",
                 round(position_size, 6),
                 round(alert_pos, 6),
-                round(trading_state.base_grid_single_price, 6),
+                format_price_for_display(trading_state.base_grid_single_price),
             )
 
     max_pos = GRID_CONFIG["MAX_POSITION"]

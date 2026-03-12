@@ -448,12 +448,14 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                     time.time() - trading_state.start_time
                 )
                 # 美化日志输出
+                from .grid_state import format_price_for_display
                 log_pnl = round(pnl, 6)
                 log_total_profit = round(trading_state.total_profit, 2)
                 log_active_profit = round(trading_state.active_profit, 2)
                 log_reduce_profit = round(trading_state.available_reduce_profit, 2)
-                log_grid_step = round(trading_state.active_grid_signle_price, 2)
-                
+                log_grid_step = format_price_for_display(trading_state.active_grid_signle_price or 0)
+                log_open_price = format_price_for_display(trading_state.open_price or 0)
+                log_current_price = format_price_for_display(trading_state.current_price or 0)
                 logger.info(
                     f"\n"
                     f"════════════════════ 策略运行报告 ════════════════════\n"
@@ -461,7 +463,7 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                     f"[收益统计] 套利: {log_total_profit:<8} | 动态: {log_active_profit:<8} | 减仓: {log_reduce_profit:<8}\n"
                     f"[仓位管理] 当前: {position_size:<8} | 冻结: {current_pause_position:<8} | 可用: {trading_state.available_position_size:<8}\n"
                     f"[运行状态] 耗时: {time_formatted:<8} | 成交: {trading_state.filled_count:<8} | 间距: {log_grid_step:<8}\n"
-                    f"[市场行情] 开仓: {trading_state.open_price:<8} | 当前: {trading_state.current_price:<8}\n"
+                    f"[市场行情] 开仓: {log_open_price:<8} | 当前: {log_current_price:<8}\n"
                     f"[活跃订单] 买单: {trading_state.buy_orders} | 卖单: {trading_state.sell_orders}\n"
                     f"════════════════════════════════════════════════════"
                 )

@@ -10,6 +10,7 @@ import time
 from typing import List
 
 from . import grid_state
+from .grid_state import format_price_for_display
 from exchanges.order_converter import normalize_order_to_ccxt
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ async def _resolve_fill_order_id_with_retry(
                     raw_order_id,
                     resolved,
                     "sell" if is_ask else "buy",
-                    price,
+                    format_price_for_display(price),
                 )
             return resolved
         await asyncio.sleep(0.35)
@@ -157,9 +158,14 @@ async def check_order_fills(orders: dict):
         remaining_amount = float(order.get("remaining", initial_base_amount - filled_amount))
         
         logger.info(
-            f"[WS] 检查订单: ID={client_order_index}, 方向={side}, "
-            f"价格={price}, 状态={status}, 成交量={filled_amount}, "
-            f"总数量={initial_base_amount}, 剩余={remaining_amount}"
+            "[WS] 检查订单: ID=%s, 方向=%s, 价格=%s, 状态=%s, 成交量=%s, 总数量=%s, 剩余=%s",
+            client_order_index,
+            side,
+            format_price_for_display(float(price)),
+            status,
+            filled_amount,
+            initial_base_amount,
+            remaining_amount,
         )
 
         async with replenish_grid_lock:
@@ -236,16 +242,20 @@ async def check_order_fills(orders: dict):
                         if client_order_index in trading_state.sell_orders:
                             del trading_state.sell_orders[client_order_index]
                             logger.info(
-                                f"[WS] 从活跃卖单订单列表删除订单ID={client_order_index}, 价格={price}, "
-                                f"已成交={filled_amount}"
+                                "[WS] 从活跃卖单订单列表删除订单ID=%s, 价格=%s, 已成交=%s",
+                                client_order_index,
+                                format_price_for_display(float(price)),
+                                filled_amount,
                             )
                             replenish = True
                     else:
                         if client_order_index in trading_state.buy_orders:
                             del trading_state.buy_orders[client_order_index]
                             logger.info(
-                                f"[WS] 从活跃买单订单列表删除订单ID={client_order_index}, 价格={price}, "
-                                f"已成交={filled_amount}"
+                                "[WS] 从活跃买单订单列表删除订单ID=%s, 价格=%s, 已成交=%s",
+                                client_order_index,
+                                format_price_for_display(float(price)),
+                                filled_amount,
                             )
                             replenish = True
 
@@ -337,7 +347,7 @@ async def check_current_orders(position_delta: float = 0.0):
         for order_id, price in orders_to_iter.items():
             if len(cancel_orders) < cancel_count:
                 cancel_orders.append(order_id)
-                logger.info(f"取消最远开仓单，价格={price}, 订单ID={order_id}")
+                logger.info("取消最远开仓单，价格=%s, 订单ID=%s", format_price_for_display(price), order_id)
             else:
                 break
 
@@ -365,7 +375,7 @@ async def check_current_orders(position_delta: float = 0.0):
                 
             if len(cancel_orders) < cancel_count:
                 cancel_orders.append(order_id)
-                logger.info(f"取消最远平仓单，价格={price}, 订单ID={order_id}")
+                logger.info("取消最远平仓单，价格=%s, 订单ID=%s", format_price_for_display(price), order_id)
             else:
                 break
 
@@ -405,7 +415,7 @@ async def check_current_orders(position_delta: float = 0.0):
                         continue
                     if len(cancel_orders) < cancel_count:
                         cancel_orders.append(order_id)
-                        logger.info(f"取消最远平仓单(超出持仓)，价格={price}, 订单ID={order_id}")
+                        logger.info("取消最远平仓单(超出持仓)，价格=%s, 订单ID=%s", format_price_for_display(price), order_id)
                     else:
                         break
                 await _cancel_orders(cancel_orders)
@@ -436,7 +446,7 @@ async def _check_duplicate_orders(orders: dict):
         for order_id, price in sorted_orders.items():
             if prev_price is not None and round(price, 4) == round(prev_price, 4):
                 cancel_orders.append(order_id)
-                logger.info(f"检测到重复价格订单，删除ID={order_id}, 价格={price}")
+                logger.info("检测到重复价格订单，删除ID=%s, 价格=%s", order_id, format_price_for_display(price))
             prev_price = price
         if len(cancel_orders) > 0:
             await _cancel_orders(cancel_orders)
@@ -573,8 +583,10 @@ async def _sync_current_orders(position_delta: float = 0.0):
                     # 部分成交了，但订单仍然存在
                     pause_amount = old_pause_positions[price]
                     logger.info(
-                        f"检测到占位订单部分成交: 价格={price}, "
-                        f"原始={old_pause_positions[price]}, 剩余={remaining_amount}"
+                        "检测到占位订单部分成交: 价格=%s, 原始=%s, 剩余=%s",
+                        format_price_for_display(price),
+                        old_pause_positions[price],
+                        remaining_amount,
                     )
                     # 未完全成交的平仓侧占位单视为未成交，不因部分成交更新 pause_positions
                     # 保持原始数量冻结，直到完全成交或取消（做多/做空逻辑一致）
@@ -590,7 +602,7 @@ async def _sync_current_orders(position_delta: float = 0.0):
                 "price": price,
                 "amount": pause_amount,
             }
-            logger.info(f"[REST] 同步发现占位订单: ID={order_id}, 价格={price}, 数量={pause_amount}")
+            logger.info("[REST] 同步发现占位订单: ID=%s, 价格=%s, 数量=%s", order_id, format_price_for_display(price), pause_amount)
             # ← 重要：continue 确保占位订单不计入 buy_orders/sell_orders
             # 占位订单只存在于 pause_orders 中，不影响 close_orders_count 计算
             continue
@@ -653,7 +665,7 @@ async def _sync_current_orders(position_delta: float = 0.0):
                 logger.info(
                     "[REST] 检测到开仓单消失(待确认): ID=%s, 价格=%s, confirm_sec=%.2f",
                     oid,
-                    price,
+                    format_price_for_display(float(price)),
                     confirm_sec,
                 )
                 continue
@@ -671,7 +683,7 @@ async def _sync_current_orders(position_delta: float = 0.0):
                 logger.info(
                     "[REST] 检测到平仓单消失(待确认): ID=%s, 价格=%s, confirm_sec=%.2f",
                     oid,
-                    price,
+                    format_price_for_display(float(price)),
                     confirm_sec,
                 )
                 continue
@@ -692,7 +704,7 @@ async def _sync_current_orders(position_delta: float = 0.0):
             fill_prices = []
             for oid, price in confirmed_open:
                 trading_state.rest_disappeared_open_candidates.pop(oid, None)
-                logger.info("[REST] 消失的开仓单确认成交: ID=%s, 价格=%s", oid, price)
+                logger.info("[REST] 消失的开仓单确认成交: ID=%s, 价格=%s", oid, format_price_for_display(float(price)))
                 if not OPEN_SIDE_IS_ASK:
                     trading_state.buy_orders.pop(oid, None)
                 else:
@@ -728,7 +740,7 @@ async def _sync_current_orders(position_delta: float = 0.0):
                 logger.info(
                     "[REST] 消失的平仓单确认成交: ID=%s, 价格=%s, 收益=%.2f",
                     oid,
-                    price,
+                    format_price_for_display(float(price)),
                     once_profit,
                 )
 
@@ -763,14 +775,14 @@ async def _sync_current_orders(position_delta: float = 0.0):
             oid, price, ts = candidate
             if now - ts > PENDING_TIMEOUT:
                 trading_state.pending_open_fill_candidates.remove(candidate)
-                logger.info("待确认成交超时移除: ID=%s, 价格=%s", oid, price)
+                logger.info("待确认成交超时移除: ID=%s, 价格=%s", oid, format_price_for_display(float(price)))
             elif remaining_delta >= threshold:
                 trading_state.pending_open_fill_candidates.remove(candidate)
                 logger.info(
                     "[REST] 待确认成交视为成交(仓位增量=%.2f): ID=%s, 价格=%s, 触发配对补单",
                     remaining_delta,
                     oid,
-                    price,
+                    format_price_for_display(float(price)),
                 )
                 trading_state.last_filled_order_is_close_side = False
                 trading_state.last_trade_price = float(price)
@@ -828,8 +840,11 @@ async def _handle_disappeared_order_with_fills(
             trading_state.available_reduce_profit += once_profit
 
             logger.info(
-                f"[REST] 占位订单成交: ID={order_id}, 价格={pause_price}, "
-                f"已成交={actual_filled}, 收益={once_profit}"
+                "[REST] 占位订单成交: ID=%s, 价格=%s, 已成交=%s, 收益=%s",
+                order_id,
+                format_price_for_display(pause_price),
+                actual_filled,
+                once_profit,
             )
 
         # 从 pause_orders 中删除
@@ -841,13 +856,13 @@ async def _handle_disappeared_order_with_fills(
         if filled_amount >= initial_amount:
             if pause_price in trading_state.pause_positions:
                 del trading_state.pause_positions[pause_price]
-            logger.info(f"[REST] 占位订单完全成交，清理记录: 价格={pause_price}")
+            logger.info("[REST] 占位订单完全成交，清理记录: 价格=%s", format_price_for_display(pause_price))
         else:
             # 部分成交后订单消失：释放冻结（做多/做空逻辑一致）
             remaining = initial_amount - filled_amount
             if pause_price in trading_state.pause_positions:
                 del trading_state.pause_positions[pause_price]
-            logger.info(f"[REST] 占位订单部分成交后消失: 价格={pause_price}, 已成交={filled_amount}, 释放冻结")
+            logger.info("[REST] 占位订单部分成交后消失: 价格=%s, 已成交=%s, 释放冻结", format_price_for_display(pause_price), filled_amount)
 
         # 如果所有占位订单都已清理，重置标志
         if len(trading_state.pause_orders) == 0:
