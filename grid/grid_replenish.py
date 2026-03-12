@@ -59,6 +59,7 @@ async def replenish_grid(
     filled_signal: bool,
     trade_price: float = 0.0,
     trade_prices: Optional[List[float]] = None,
+    source: str = "WS",
 ):
     """
     补充网格订单逻辑
@@ -69,9 +70,12 @@ async def replenish_grid(
         filled_signal: 是否有订单成交
         trade_price: 成交价格（单笔时使用）
         trade_prices: 多笔成交价列表（sync 批量消失单时传入，内部按价格容差去重）
+        source: 触发来源，用于日志区分 "WS"（WebSocket 成交）或 "REST"（对账/消失单）
     """
     trading_state = grid_state.trading_state
-    
+    if filled_signal:
+        trading_state._replenish_source = source
+
     if trading_state.grid_pause:
         logger.info("网格交易处于暂停状态，跳过补单")
         return
@@ -121,7 +125,8 @@ async def _on_open_side_filled(trade_price: float = 0.0):
     if trading_state.last_filled_order_is_close_side:
         return
 
-    logger.info("开仓侧被吃单补单")
+    src = getattr(trading_state, "_replenish_source", "WS")
+    logger.info("开仓侧被吃单补单 [%s]", src)
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
     open_orders = []
@@ -195,8 +200,9 @@ async def _on_open_side_filled(trade_price: float = 0.0):
                     trading_state.buy_orders[order_id] = final_price
                 all_order_ids.append(order_id)
             logger.info(
-                f"开仓侧被吃单补充订单成功: 开仓单={len(open_orders)}, "
-                f"配对平仓单={'0(目标价已有，跳过)' if not order_id else '1'}, 订单ID={all_order_ids}"
+                f"开仓侧被吃单补充订单成功 [%s]: 开仓单={len(open_orders)}, "
+                f"配对平仓单={'0(目标价已有，跳过)' if not order_id else '1'}, 订单ID={all_order_ids}",
+                getattr(trading_state, "_replenish_source", "WS"),
             )
         else:
             trading_state.paired_close_target_price = float(final_price)
