@@ -751,7 +751,8 @@ async def _sync_current_orders(position_delta: float = 0.0):
     else:
         trading_state.pause_position_exist = False
 
-    # 用 REST 同步结果更新 state；若本轮 sync 内调用过 replenish_grid，需合并保留其新挂的单，避免被覆盖导致下一轮 replenish(False) 误触大间距
+    # 用 REST 同步结果更新 state
+    # 1) 若本轮 sync 内调用过 replenish_grid，需合并保留其新挂的单，避免被覆盖导致下一轮 replenish(False) 误触大间距
     if replenish_called_in_sync:
         for oid, pr in trading_state.buy_orders.items():
             if oid not in buy_orders:
@@ -759,6 +760,31 @@ async def _sync_current_orders(position_delta: float = 0.0):
         for oid, pr in trading_state.sell_orders.items():
             if oid not in sell_orders:
                 sell_orders[oid] = pr
+
+    # 2) 对于已被 REST 判定为“消失(待确认)”的订单，在真正确认成交/取消之前，
+    #    需要继续保留在本地 buy_orders/sell_orders 中，否则下一轮 disappeared_open_orders/close_prices
+    #    将无法再感知这些订单，导致 rest_disappeared_*_candidates 永远得不到 confirm，错过补单/记收益。
+    #    这里用候选中的 price 进行恢复，仅用于本地状态和后续判断，不会再次向交易所下单。
+    for oid, (price, first_ts) in getattr(trading_state, "rest_disappeared_open_candidates", {}).items():
+        if not OPEN_SIDE_IS_ASK:
+            # 做多：开仓侧是买单
+            if oid not in buy_orders:
+                buy_orders[oid] = float(price)
+        else:
+            # 做空：开仓侧是卖单
+            if oid not in sell_orders:
+                sell_orders[oid] = float(price)
+
+    for oid, (price, first_ts) in getattr(trading_state, "rest_disappeared_close_candidates", {}).items():
+        if not OPEN_SIDE_IS_ASK:
+            # 做多：平仓侧是卖单
+            if oid not in sell_orders:
+                sell_orders[oid] = float(price)
+        else:
+            # 做空：平仓侧是买单
+            if oid not in buy_orders:
+                buy_orders[oid] = float(price)
+
     trading_state.buy_orders = buy_orders
     trading_state.sell_orders = sell_orders
 

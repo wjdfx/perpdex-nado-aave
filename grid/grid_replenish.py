@@ -1015,12 +1015,22 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
     # 做空: 最低卖 - 2 * Step
 
     multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+    step = float(trading_state.active_grid_signle_price or trading_state.base_grid_single_price or 0)
     new_price = round_price_to_precision(
-        nearest_open_price + (trading_state.active_grid_signle_price * 2 * multiplier)
+        nearest_open_price + (step * 2 * multiplier)
     )
 
-    # 若该价格已有平仓单（例如刚挂的配对卖单），则不再补，避免重复挂单再被重复检测取消
-    if new_price in trading_state.close_orders.values():
+    # 与配对平仓一致：若 new_price 的 step×1 内已有平仓单，则不再补，避免配对平仓因容差跳过后大间距又挂同档导致重复
+    close_side_orders = (
+        trading_state.sell_orders if not OPEN_SIDE_IS_ASK else trading_state.buy_orders
+    )
+    existing_prices = list(close_side_orders.values())
+    if step > 0 and any(abs(float(p) - new_price) <= step for p in existing_prices):
+        logger.info(
+            "大间距平仓补单跳过: 目标价 %s 的 step(%s) 内已有平仓单，无需重复挂单",
+            format_price_for_display(new_price),
+            format_price_for_display(step),
+        )
         return
 
     # 检查当前价格
