@@ -69,17 +69,18 @@ class GridTrading:
         """
         orders = []
 
+        from .grid_state import round_price_to_precision
         # 生成买单（ask=False）：基准价格下方
         if side != -1:
             for i in range(1, grid_count + 1):
                 buy_price = base_price * (1 - grid_spread * i / 100)
-                orders.append((False, round(buy_price, 2), grid_amount))
+                orders.append((False, round_price_to_precision(buy_price), grid_amount))
 
         # 生成卖单（ask=True）：基准价格上方
         if side != 1:
             for i in range(1, grid_count + 1):
                 sell_price = base_price * (1 + grid_spread * i / 100)
-                orders.append((True, round(sell_price, 2), grid_amount))
+                orders.append((True, round_price_to_precision(sell_price), grid_amount))
 
         return orders
     

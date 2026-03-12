@@ -10,6 +10,7 @@ import time
 from typing import List, Optional, Tuple
 
 from . import grid_state
+from .grid_state import round_price_to_precision
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def calculate_grid_prices(
             # 做空: 开仓价格在当前价格 ABOVE
             price = current_price * (1 + distance)
 
-        open_prices.append(round(price, 2))
+        open_prices.append(round_price_to_precision(price))
 
     # 排序价格（从低到高）
     open_prices.sort()
@@ -149,10 +150,10 @@ async def _on_open_side_filled(trade_price: float = 0.0):
         # 计算失败时仍用成交价+步长挂出配对平仓单，确保开仓成交必有止盈单
         step = trading_state.base_grid_single_price
         if not OPEN_SIDE_IS_ASK:  # 做多：卖单价格 = 成交价 + 步长
-            close_price = round(trade_price + step, 2)
+            close_price = round_price_to_precision(trade_price + step)
             close_order = (CLOSE_SIDE_IS_ASK, close_price, GRID_CONFIG["GRID_AMOUNT"])
         else:  # 做空：买单价格 = 成交价 - 步长
-            close_price = round(trade_price - step, 2)
+            close_price = round_price_to_precision(trade_price - step)
             close_order = (CLOSE_SIDE_IS_ASK, close_price, GRID_CONFIG["GRID_AMOUNT"])
         logger.info(f"开仓侧成交后使用回退逻辑挂出配对平仓单: 价格={close_order[1]}")
 
@@ -252,9 +253,9 @@ async def _place_paired_close_order_with_retry(
 
     def calc_target_price(multiplier: int) -> float:
         if not OPEN_SIDE_IS_ASK:  # LONG: 买入后挂卖单
-            return round(float(fill_price) + step * multiplier, 2)
+            return round_price_to_precision(float(fill_price) + step * multiplier)
         # SHORT: 卖出后挂买单
-        return round(float(fill_price) - step * multiplier, 2)
+        return round_price_to_precision(float(fill_price) - step * multiplier)
 
     while stage_index < len(stages):
         stage_name, stage_multiplier, stage_retry_limit = stages[stage_index]
@@ -341,9 +342,9 @@ async def _place_paired_close_order_with_retry(
                     current_price = float(trading_state.current_price or 0.0)
                     if current_price and current_price > 0:
                         if not OPEN_SIDE_IS_ASK:
-                            try_price = round(current_price + step * (price_retry + 1), 2)
+                            try_price = round_price_to_precision(current_price + step * (price_retry + 1))
                         else:
-                            try_price = round(current_price - step * (price_retry + 1), 2)
+                            try_price = round_price_to_precision(current_price - step * (price_retry + 1))
                         logger.info(
                             "配对平仓 post-only 跨盘调价重试: 原价=%.2f, 市价=%.2f, 第%d档价=%.2f, error_code=%s",
                             target_price,
@@ -427,8 +428,8 @@ async def _calc_next_open_side_open_order() -> Optional[Tuple[bool, float, float
     # 计算下一个价格
     # 做多: 最低价 - Step。做空: 最高价 + Step。
     multiplier = -1 if not OPEN_SIDE_IS_ASK else 1
-    new_price = round(
-        furthest_price + (trading_state.active_grid_signle_price * multiplier), 2
+    new_price = round_price_to_precision(
+        furthest_price + (trading_state.active_grid_signle_price * multiplier)
     )
 
     # 安全检查：
@@ -437,10 +438,10 @@ async def _calc_next_open_side_open_order() -> Optional[Tuple[bool, float, float
 
     if not OPEN_SIDE_IS_ASK:  # 做多
         while new_price >= trading_state.current_price:
-            new_price = round(new_price - trading_state.active_grid_signle_price, 2)
+            new_price = round_price_to_precision(new_price - trading_state.active_grid_signle_price)
     else:  # 做空
         while new_price <= trading_state.current_price:
-            new_price = round(new_price + trading_state.active_grid_signle_price, 2)
+            new_price = round_price_to_precision(new_price + trading_state.active_grid_signle_price)
 
     amount = GRID_CONFIG["GRID_AMOUNT"]
     return (OPEN_SIDE_IS_ASK, new_price, amount)
@@ -509,8 +510,8 @@ async def _calc_next_open_side_close_order(
     # 做空: 最高买 + Step
 
     multiplier = -1 if not OPEN_SIDE_IS_ASK else 1
-    new_close_price = round(
-        nearest_close_price + (trading_state.base_grid_single_price * multiplier), 2
+    new_close_price = round_price_to_precision(
+        nearest_close_price + (trading_state.base_grid_single_price * multiplier)
     )
 
     # 4. 使用成交价格覆盖逻辑
@@ -518,22 +519,21 @@ async def _calc_next_open_side_close_order(
         # 做多: 成交(买) + Step
         # 做空: 成交(卖) - Step
         price_multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-        new_close_price = round(
-            trade_price + (trading_state.base_grid_single_price * price_multiplier), 2
+        new_close_price = round_price_to_precision(
+            trade_price + (trading_state.base_grid_single_price * price_multiplier)
         )
 
     # 5. 间距检查
     diff = abs(new_close_price - trading_state.current_price)
     if diff > trading_state.base_grid_single_price * 2:
         safe_multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-        new_close_price = round(
+        new_close_price = round_price_to_precision(
             nearest_open_price
             + (
                 trading_state.active_grid_signle_price
                 + trading_state.base_grid_single_price
             )
-            * safe_multiplier,
-            2,
+            * safe_multiplier
         )
 
     # 6. 当前价格安全检查
@@ -545,8 +545,8 @@ async def _calc_next_open_side_close_order(
             return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
         # 放宽：当前价略高于计算卖价时，仍用成交价+步长挂出卖单，保证买单成交必有配对卖单
         if trade_price > 0:
-            fallback_price = round(
-                trade_price + trading_state.base_grid_single_price, 2
+            fallback_price = round_price_to_precision(
+                trade_price + trading_state.base_grid_single_price
             )
             if fallback_price > trading_state.current_price:
                 return (CLOSE_SIDE_IS_ASK, fallback_price, GRID_CONFIG["GRID_AMOUNT"])
@@ -555,8 +555,8 @@ async def _calc_next_open_side_close_order(
         if trading_state.current_price > new_close_price:
             return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
         if trade_price > 0:
-            fallback_price = round(
-                trade_price - trading_state.base_grid_single_price, 2
+            fallback_price = round_price_to_precision(
+                trade_price - trading_state.base_grid_single_price
             )
             if fallback_price < trading_state.current_price:
                 return (CLOSE_SIDE_IS_ASK, fallback_price, GRID_CONFIG["GRID_AMOUNT"])
@@ -589,7 +589,7 @@ async def _on_close_side_filled(trade_price: float = 0.0):
         new_open_order = await _calc_next_close_side_open_order()
         if new_open_order:
             _is_ask, new_open_price, _ = new_open_order
-            if round(new_open_price, 2) != round(trading_state.last_trade_price, 2):
+            if round_price_to_precision(new_open_price) != round_price_to_precision(trading_state.last_trade_price):
                 open_orders.append(new_open_order)
             else:
                 logger.info(
@@ -682,8 +682,8 @@ async def _calc_next_close_side_open_order() -> Optional[Tuple[bool, float, floa
 
     # 计算新的开仓价格
     multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-    new_open_price = round(
-        nearest_open_price + (trading_state.active_grid_signle_price * multiplier), 2
+    new_open_price = round_price_to_precision(
+        nearest_open_price + (trading_state.active_grid_signle_price * multiplier)
     )
 
     return (OPEN_SIDE_IS_ASK, new_open_price, GRID_CONFIG["GRID_AMOUNT"])
@@ -715,8 +715,8 @@ async def _calc_next_close_side_close_order() -> Optional[Tuple[bool, float, flo
         furthest_close_price = trading_state.current_price
 
     multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-    new_close_price = round(
-        furthest_close_price + (trading_state.active_grid_signle_price * multiplier), 2
+    new_close_price = round_price_to_precision(
+        furthest_close_price + (trading_state.active_grid_signle_price * multiplier)
     )
 
     return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
@@ -850,9 +850,8 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
 
     # 大间距时允许补开仓单；若该笔成交，后续会按「开仓侧被吃单补单」挂出配对平仓单，无需因「上次成交是开仓侧」而跳过
     multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-    new_price = round(
-        nearest_open_price + (trading_state.active_grid_signle_price * multiplier),
-        2,
+    new_price = round_price_to_precision(
+        nearest_open_price + (trading_state.active_grid_signle_price * multiplier)
     )
 
     # 若该价格已有开仓单（例如初始化刚挂的），则不再补，避免重复挂单
@@ -916,16 +915,16 @@ async def _over_range_trailing_open_order():
 
     if not OPEN_SIDE_IS_ASK:
         nearest = max(trading_state.open_orders.values())
-        new_price = round(nearest + step, 2)
+        new_price = round_price_to_precision(nearest + step)
         # 做多：新买单必须低于市价；若算出的价已≥当前价，改为当前价下方一档，实现“跟价”挂单
         if new_price >= current_price:
-            new_price = round(current_price - step, 2)
+            new_price = round_price_to_precision(current_price - step)
     else:
         nearest = min(trading_state.open_orders.values())
-        new_price = round(nearest - step, 2)
+        new_price = round_price_to_precision(nearest - step)
         # 做空：新卖单必须高于市价；若算出的价已≤当前价，改为当前价上方一档
         if new_price <= current_price:
-            new_price = round(current_price + step, 2)
+            new_price = round_price_to_precision(current_price + step)
 
     if new_price <= 0:
         return
@@ -1004,9 +1003,8 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
     # 做空: 最低卖 - 2 * Step
 
     multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-    new_price = round(
-        nearest_open_price + (trading_state.active_grid_signle_price * 2 * multiplier),
-        2,
+    new_price = round_price_to_precision(
+        nearest_open_price + (trading_state.active_grid_signle_price * 2 * multiplier)
     )
 
     # 若该价格已有平仓单（例如刚挂的配对卖单），则不再补，避免重复挂单再被重复检测取消
@@ -1068,21 +1066,20 @@ async def _replenish_config_open_orders():
             )
         
         multiplier = -1 if not OPEN_SIDE_IS_ASK else 1
-        new_price = round(
-            furthest_open_price + (trading_state.active_grid_signle_price * multiplier),
-            2,
+        new_price = round_price_to_precision(
+            furthest_open_price + (trading_state.active_grid_signle_price * multiplier)
         )
         
         # 有效性检查
         if not OPEN_SIDE_IS_ASK:  # 做多：买单价格必须 < 当前价格
             while new_price >= trading_state.current_price:
-                new_price = round(
-                    new_price - trading_state.active_grid_signle_price, 2
+                new_price = round_price_to_precision(
+                    new_price - trading_state.active_grid_signle_price
                 )
         else:  # 做空：卖单价格必须 > 当前价格
             while new_price <= trading_state.current_price:
-                new_price = round(
-                    new_price + trading_state.active_grid_signle_price, 2
+                new_price = round_price_to_precision(
+                    new_price + trading_state.active_grid_signle_price
                 )
         
         success, order_id, _, _ = await trading_state.grid_trading.place_single_order(
@@ -1116,7 +1113,7 @@ async def _replenish_config_close_orders():
     )
 
     step = trading_state.active_grid_signle_price
-    close_prices_set = set(round(p, 2) for p in trading_state.close_orders.values()) if trading_state.close_orders_count > 0 else set()
+    close_prices_set = set(round_price_to_precision(p) for p in trading_state.close_orders.values()) if trading_state.close_orders_count > 0 else set()
 
     # 已有平仓单时不再按“配置数量”补单，避免在中间插入与买单成交无关的价位
     if trading_state.close_orders_count > 0:
@@ -1137,7 +1134,7 @@ async def _replenish_config_close_orders():
         if nearest_open_price is not None:
             mult = 1 if not OPEN_SIDE_IS_ASK else -1
             for k in range(1, 20):  # 最多尝试 20 档，避免死循环
-                candidate = round(nearest_open_price + step * k * mult, 2)
+                candidate = round_price_to_precision(nearest_open_price + step * k * mult)
                 current_ok = (
                     (not OPEN_SIDE_IS_ASK and candidate > trading_state.current_price)
                     or (OPEN_SIDE_IS_ASK and candidate < trading_state.current_price)
@@ -1147,7 +1144,7 @@ async def _replenish_config_close_orders():
                     current_ok
                     and candidate not in close_prices_set
                     and not (
-                        round(trading_state.last_trade_price, 2) == candidate
+                        round_price_to_precision(trading_state.last_trade_price) == candidate
                         and not trading_state.last_filled_order_is_close_side
                     )
                 ):
@@ -1177,18 +1174,17 @@ async def _replenish_config_close_orders():
                 furthest_close_price = nearest_open + (step * multiplier)
 
             multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
-            new_price = round(
-                furthest_close_price + (step * multiplier),
-                2,
+            new_price = round_price_to_precision(
+                furthest_close_price + (step * multiplier)
             )
 
         # 有效性检查
         if not OPEN_SIDE_IS_ASK:
             while new_price <= trading_state.current_price:
-                new_price = round(new_price + step, 2)
+                new_price = round_price_to_precision(new_price + step)
         else:
             while new_price >= trading_state.current_price:
-                new_price = round(new_price - step, 2)
+                new_price = round_price_to_precision(new_price - step)
 
         success, order_id, _, _ = await trading_state.grid_trading.place_single_order(
             is_ask=CLOSE_SIDE_IS_ASK,
@@ -1201,7 +1197,7 @@ async def _replenish_config_close_orders():
                 trading_state.sell_orders[order_id] = new_price
             else:
                 trading_state.buy_orders[order_id] = new_price
-            close_prices_set.add(round(new_price, 2))
+            close_prices_set.add(round_price_to_precision(new_price))
         else:
             logger.error(f"补充平仓单失败，退出循环。价格={new_price}")
             break

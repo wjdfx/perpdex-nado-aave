@@ -368,12 +368,14 @@ async def _save_pause_position():
                 breakeven_price, price_step, order_count, order_amounts, multiplier
             )
 
+            from .grid_state import round_price_to_precision
             # 创建订单列表
             for price, amount in zip(order_prices, order_amounts):
-                orders.append((CLOSE_SIDE_IS_ASK, round(price, 2), round(amount, 2)))
+                orders.append((CLOSE_SIDE_IS_ASK, round_price_to_precision(price), round(amount, 2)))
         else:
+            from .grid_state import round_price_to_precision
             # 不需要拆分，单个订单（以 ref_price 为主，不做预调整）
-            orders.append((CLOSE_SIDE_IS_ASK, round(breakeven_price, 2), round(total_position, 2)))
+            orders.append((CLOSE_SIDE_IS_ASK, round_price_to_precision(breakeven_price), round(total_position, 2)))
 
         logger.info(
             "占位订单计划: 可用仓位=%s, 订单数=%s, 回本价=%s, 基础间距=%s, 详情=%s",
@@ -423,8 +425,9 @@ async def _save_pause_position():
         step = pause_grid_step
         max_retries = 15
 
+        from .grid_state import round_price_to_precision
         for is_ask, price, amount in orders:
-            try_price = round(price, 2)
+            try_price = round_price_to_precision(price)
             attempt = 0
             placed = False
 
@@ -455,9 +458,9 @@ async def _save_pause_position():
                         )
                         break
                     if not OPEN_SIDE_IS_ASK:  # 做多(卖单)：上移一档
-                        try_price = round(market_price + step * attempt, 2)
+                        try_price = round_price_to_precision(market_price + step * attempt)
                     else:  # 做空(买单)：下移一档
-                        try_price = round(market_price - step * attempt, 2)
+                        try_price = round_price_to_precision(market_price - step * attempt)
                     logger.info(
                         "占位订单 post-only 跨盘被拒，逐档重试: is_ask=%s, 原价=%.2f, 市价=%.2f, "
                         "第%d/%d次尝试价=%.2f, error_code=%s, 错误=%s",
