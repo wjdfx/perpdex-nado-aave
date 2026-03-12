@@ -171,6 +171,8 @@ class GridTrading:
         Returns:
             Tuple[bool, List[str]]: (是否成功放置所有订单, 订单ID列表)
         """
+        from .grid_state import round_price_to_precision
+        orders = [(is_ask, round_price_to_precision(price), amount) for is_ask, price, amount in orders]
         return await self.exchange.place_multi_orders(orders)
     
 
@@ -187,6 +189,8 @@ class GridTrading:
         Returns:
             Tuple[bool, str, str, object]: (是否成功, 订单ID, 错误信息, error_code)
         """
+        from .grid_state import round_price_to_precision
+        price = round_price_to_precision(price)
         # Check if exchange supports reduce_only parameter
         if hasattr(self.exchange, 'place_single_order'):
             import inspect

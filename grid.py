@@ -50,6 +50,7 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "EMA_REVERSION_PERIOD": int(_get_required_env("EMA_REVERSION_PERIOD")),  # EMA均值回归周期
         "EMA_REVERSION_THRESHOLD": float(_get_required_env("EMA_REVERSION_THRESHOLD")),  # EMA均值回归偏离阈值
         "OVER_RANGE_GAP_MULTIPLIER": float(os.getenv("OVER_RANGE_GAP_MULTIPLIER", "2.5")),  # 大间距补单：开平仓间距超过该倍数步长时触发；无卖单时用于开仓价与当前价间距
+        "PRICE_PRECISION": float(os.getenv("PRICE_PRECISION", "0.1")),  # 价格精度（最小变动单位），如 0.1=ETH、0.01=部分币种，用于下单前舍入以适配不同交易所/币种
     }
     
     return {"nado": common_config.copy()}

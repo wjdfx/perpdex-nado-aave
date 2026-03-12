@@ -141,6 +141,19 @@ def set_grid_config(config: dict) -> None:
     GRID_CONFIG = config
 
 
+def round_price_to_precision(price: float) -> float:
+    """
+    按配置的 PRICE_PRECISION 将价格舍入到交易所支持的最小变动单位。
+    用于适配不同币种/交易所（如 Nado ETH 仅支持 0.1）。
+    """
+    if GRID_CONFIG is None or "PRICE_PRECISION" not in GRID_CONFIG:
+        return round(price, 2)
+    prec = float(GRID_CONFIG["PRICE_PRECISION"])
+    if prec <= 0:
+        return round(price, 2)
+    return round(round(price / prec) * prec, 6)
+
+
 async def seconds_formatter(seconds: int) -> str:
     """
     将秒数格式化为可读的时间字符串

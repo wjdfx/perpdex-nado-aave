@@ -1015,7 +1015,7 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
         if new_price >= trading_state.current_price:
             return
 
-    success, order_id = await trading_state.grid_trading.place_single_order(
+    success, order_id, _, _ = await trading_state.grid_trading.place_single_order(
         is_ask=CLOSE_SIDE_IS_ASK,
         price=new_price,
         amount=GRID_CONFIG["GRID_AMOUNT"],
