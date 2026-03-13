@@ -202,7 +202,7 @@ async def _on_open_side_filled(trade_price: float = 0.0):
                 all_order_ids.append(order_id)
             logger.info(
                 f"开仓侧被吃单补充订单成功 [%s]: 开仓单={len(open_orders)}, "
-                f"配对平仓单={'0(目标价已有，跳过)' if not order_id else '1'}, 订单ID={all_order_ids}",
+                f"配对平仓单={1 if order_id else 0}, 订单ID={all_order_ids}",
                 getattr(trading_state, "_replenish_source", "WS"),
             )
         else:
@@ -260,19 +260,6 @@ async def _place_paired_close_order_with_retry(
     while stage_index < len(stages):
         stage_name, stage_multiplier, stage_retry_limit = stages[stage_index]
         target_price = calc_target_price(stage_multiplier)
-
-        # 若目标价 step×1 内已有平仓单，则无需重复挂单（价格容差，避免相邻档重复挂卖单）
-        close_side_orders = (
-            trading_state.sell_orders if not OPEN_SIDE_IS_ASK else trading_state.buy_orders
-        )
-        existing_prices = list(close_side_orders.values())
-        if any(abs(float(p) - target_price) <= step for p in existing_prices):
-            logger.info(
-                "配对平仓跳过: 目标价 %s 的 step(%s) 内已有平仓单，无需重复挂单",
-                format_price_for_display(target_price),
-                format_price_for_display(step),
-            )
-            return True, "", target_price
 
         # 若目标价已落后于当前价，阶段升级（LONG: target<=current, SHORT: target>=current）
         current_price = float(trading_state.current_price or 0.0)
