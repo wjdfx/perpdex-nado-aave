@@ -1020,16 +1020,19 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
         nearest_open_price + (step * 2 * multiplier)
     )
 
-    # 与配对平仓一致：若 new_price 的 step×1 内已有平仓单，则不再补，避免配对平仓因容差跳过后大间距又挂同档导致重复
+    # 仅当 new_price 与已有平仓单「同档」（约 0.5*step 内）才跳过，避免重复挂单。
+    # 若用整 step 判断，会误判：例如仅有卖单 2123.9、目标 2122 时 |2123.9-2122|<step 被跳过，
+    # 导致 2119.7 与 2123.9 之间缺一档（2121.9/2122），大间距无法填补。
     close_side_orders = (
         trading_state.sell_orders if not OPEN_SIDE_IS_ASK else trading_state.buy_orders
     )
     existing_prices = list(close_side_orders.values())
-    if step > 0 and any(abs(float(p) - new_price) <= step for p in existing_prices):
+    same_level_tolerance = step * 0.5
+    if step > 0 and any(abs(float(p) - new_price) <= same_level_tolerance for p in existing_prices):
         logger.info(
-            "大间距平仓补单跳过: 目标价 %s 的 step(%s) 内已有平仓单，无需重复挂单",
+            "大间距平仓补单跳过: 目标价 %s 的 0.5*step(%s) 内已有平仓单，无需重复挂单",
             format_price_for_display(new_price),
-            format_price_for_display(step),
+            format_price_for_display(same_level_tolerance),
         )
         return
 
