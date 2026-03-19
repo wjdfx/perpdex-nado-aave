@@ -141,6 +141,12 @@ class NadoAdapter(ExchangeInterface):
         self.isolated_margin = self._env_bool("NADO_ISOLATED", default=False)
         # 可选：isolated 初始保证金（USDC，x6 精度编码到 appendix 的高 64 位）
         self.isolated_margin_usdc = float(os.getenv("NADO_ISOLATED_MARGIN_USDC", "0") or 0)
+        # isolated 池建立后（_iso_margin_seeded=true）每笔开仓/补单写入的保证金策略
+        # - notional: 写入约等于该笔名义价值（price*amount，保持旧行为）
+        # - fixed:   每笔都写入固定的 NADO_ISOLATED_MARGIN_USDC（用于控制整体杠杆）
+        self.isolated_margin_after_seed_mode = (os.getenv("NADO_ISOLATED_MARGIN_AFTER_SEED_MODE", "notional") or "notional").strip().lower()
+        # 可选：仅当 after_seed_mode='step' 时使用
+        self.isolated_margin_step_usdc = float(os.getenv("NADO_ISOLATED_MARGIN_STEP_USDC", "0") or 0)
         # 标记 isolated 保证金是否已划拨（首单成功 or 启动时已有持仓），后续开仓不再重复携带
         self._iso_margin_seeded = False
         # 缓存 isolated 子账号 hex（启动时通过 archive API 发现）
@@ -576,9 +582,24 @@ class NadoAdapter(ExchangeInterface):
                     isolated_margin_x6 = int(self.isolated_margin_usdc * 1_000_000)
                     logger.info("首次 isolated 开仓，appendix 携带 margin=%s USDC", self.isolated_margin_usdc)
                 elif self._iso_margin_seeded:
-                    per_order_margin = price * amount
-                    isolated_margin_x6 = int(per_order_margin * 1_000_000)
-                    logger.debug("补单携带 per-order margin=%.2f USDC (notional)", per_order_margin)
+                    # isolated 池已建立后：按配置选择每笔保证金写入策略
+                    mode = self.isolated_margin_after_seed_mode
+                    if mode == "fixed":
+                        margin_usdc = self.isolated_margin_usdc
+                        logger.debug("补单携带 fixed margin=%.2f USDC", margin_usdc)
+                    elif mode == "step":
+                        margin_usdc = self.isolated_margin_step_usdc
+                        # 若未配置 step，则给一个保底，避免 margin=0 导致健康检查失败
+                        if margin_usdc <= 0:
+                            margin_usdc = max(price * amount * 0.5, 20.0)
+                        logger.debug("补单携带 step margin=%.2f USDC", margin_usdc)
+                    else:
+                        # 默认 notional: 约等于该笔名义价值
+                        per_order_margin = price * amount
+                        margin_usdc = per_order_margin
+                        logger.debug("补单携带 per-order margin=%.2f USDC (notional)", per_order_margin)
+
+                    isolated_margin_x6 = int(margin_usdc * 1_000_000)
 
             appendix = self._build_appendix(
                 order_type=3,
