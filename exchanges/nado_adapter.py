@@ -1539,7 +1539,12 @@ class NadoAdapter(ExchangeInterface):
 
             if self.isolated_margin and not self._iso_margin_seeded and is_bid:
                 self._iso_margin_seeded = True
-                logger.info("isolated margin 已划拨（首笔买单成交），后续开仓不再携带 margin")
+                logger.info(
+                    "isolated margin 池已建立（首笔买单成交），后续开仓将按 AFTER_SEED_MODE 携带保证金: mode=%s fixed_usdc=%.3f step_usdc=%.3f",
+                    self.isolated_margin_after_seed_mode,
+                    self.isolated_margin_usdc,
+                    self.isolated_margin_step_usdc,
+                )
 
             callback = self.callbacks['orders']
             if asyncio.iscoroutinefunction(callback):
