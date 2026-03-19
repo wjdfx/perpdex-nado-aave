@@ -71,6 +71,13 @@ class NadoAdapter(ExchangeInterface):
         raw = os.getenv(name, "").strip()
         if not raw:
             return default
+        try:
+            value = int(raw)
+            if value < min_value:
+                return default
+            return value
+        except Exception:
+            return default
 
     @staticmethod
     def _env_bool(name: str, default: bool = False) -> bool:
@@ -82,13 +89,6 @@ class NadoAdapter(ExchangeInterface):
         if raw in ("0", "false", "no", "n", "off"):
             return False
         return default
-        try:
-            value = int(raw)
-            if value < min_value:
-                return default
-            return value
-        except Exception:
-            return default
 
     def __init__(
         self,
