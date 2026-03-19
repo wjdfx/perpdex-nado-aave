@@ -564,13 +564,19 @@ class NadoAdapter(ExchangeInterface):
             
             logger.debug(f"下单: is_ask={is_ask}, price_x18={price_x18}, amount_x18={amount_x18}, reduce_only={reduce_only}")
 
-            # 只在首次建仓时携带 isolated_margin；仓位已建立后不再重复划拨
+            # isolated margin 策略：
+            #   首次建仓（池未初始化）→ 携带完整 NADO_ISOLATED_MARGIN_USDC 建立保证金池
+            #   后续补单（池已初始化）→ 携带 notional (price*amount) 作为增量保证金
+            #   平仓单 (reduce_only)  → 不携带
             isolated_margin_x6 = 0
-            if (self.isolated_margin and not reduce_only
-                    and self.isolated_margin_usdc > 0
-                    and not self._iso_margin_seeded):
-                isolated_margin_x6 = int(self.isolated_margin_usdc * 1_000_000)
-                logger.info("首次 isolated 开仓，appendix 携带 margin=%s USDC", self.isolated_margin_usdc)
+            if self.isolated_margin and not reduce_only:
+                if not self._iso_margin_seeded and self.isolated_margin_usdc > 0:
+                    isolated_margin_x6 = int(self.isolated_margin_usdc * 1_000_000)
+                    logger.info("首次 isolated 开仓，appendix 携带 margin=%s USDC", self.isolated_margin_usdc)
+                elif self._iso_margin_seeded:
+                    per_order_margin = price * amount
+                    isolated_margin_x6 = int(per_order_margin * 1_000_000)
+                    logger.debug("补单携带 per-order margin=%.2f USDC (notional)", per_order_margin)
 
             appendix = self._build_appendix(
                 order_type=3,
