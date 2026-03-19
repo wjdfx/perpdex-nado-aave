@@ -19,6 +19,7 @@ from common.logging_config import setup_logging
 logger = logging.getLogger(__name__)
 
 import asyncio
+import os
 import time
 from typing import Optional
 
@@ -316,8 +317,11 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
         OPEN_SIDE_IS_ASK as OPEN_ASK,
     )
 
+    subaccount_name = (os.getenv("NADO_SUBACCOUNT_NAME") or "default").strip()
     exchange_adapter = create_exchange_adapter(
-        exchange_type=_exchange_type, market_id=CONFIG["MARKET_ID"]
+        exchange_type=_exchange_type,
+        market_id=CONFIG["MARKET_ID"],
+        subaccount_name=subaccount_name or "default",
     )
     if exchange_adapter is None:
         logger.exception("不支持的交易所类型")
