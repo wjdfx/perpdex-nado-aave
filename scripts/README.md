@@ -43,3 +43,7 @@ python scripts/list_nado_products.py -b ENAUSDT --top 10
 
 - 未指定 `-b` 时：只打印所有永续产品的 `product_id` 与 `approx_price`，需自行对照交易所前端判断对应币种。
 - 指定 `-b SYMBOL` 时：会请求 Binance 该交易对现价，并计算每个 Nado 永续价与参考价的差值，按差值排序输出前 `--top` 个候选，便于快速定位（如 ENA 对应哪个 product_id）。最终仍需在 Nado 前端切换合约对比盘口确认。
+
+补充：
+- 脚本会**先查 Binance 现货**价格；若该交易对不在现货（常见：只在合约端有），会自动回退查 **Binance USDT 合约（fapi）**。
+- 如果两边都失败，会打印 `[WARN]` 提示（HTTP 状态码与返回体片段），便于排查是交易对不存在、地区/网络限制、或被限流等原因。

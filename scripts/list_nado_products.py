@@ -60,21 +60,40 @@ def parse_args():
     return parser.parse_args()
 
 
-async def fetch_binance_price(symbol: str) -> float:
-    """从 Binance 获取指定交易对的现价。"""
-    url = "https://api.binance.com/api/v3/ticker/price"
-    params = {"symbol": symbol.upper()}
+async def fetch_binance_price(symbol: str) -> tuple[float, str]:
+    """从 Binance 获取指定交易对的现价。
+
+    说明：
+    - 默认先查现货（api/v3）。若交易对不在现货（常见：只在合约端有），会返回 4xx；
+    - 再回退查询 USDT 合约（fapi/v1），提高可用性。
+    """
+    symbol = symbol.upper()
+    endpoints = [
+        ("spot", "https://api.binance.com/api/v3/ticker/price"),
+        ("futures", "https://fapi.binance.com/fapi/v1/ticker/price"),
+    ]
     connector = aiohttp.TCPConnector(ssl=False)
-    try:
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(url, params=params, timeout=10) as resp:
-                if resp.status != 200:
-                    return 0.0
-                data = await resp.json()
-                price = float(data.get("price") or 0.0)
-                return price
-    except Exception:
-        return 0.0
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+        for name, url in endpoints:
+            try:
+                async with session.get(url, params={"symbol": symbol}, timeout=10) as resp:
+                    if resp.status != 200:
+                        # 打印一次可读错误，便于用户判断是 symbol 不存在 / 地域限制 / 429 等
+                        try:
+                            body = await resp.text()
+                        except Exception:
+                            body = ""
+                        print(f"[WARN] Binance {name} 查询失败: symbol={symbol}, status={resp.status}, body={body[:200]}")
+                        continue
+                    data = await resp.json()
+                    price = float(data.get("price") or 0.0)
+                    if price > 0:
+                        return price, name
+            except Exception as e:
+                print(f"[WARN] Binance {name} 查询异常: symbol={symbol}, err={e}")
+                continue
+    return 0.0, ""
 
 
 async def main():
@@ -103,8 +122,9 @@ async def main():
         return
 
     ref_price = 0.0
+    ref_source = ""
     if args.binance_symbol:
-        ref_price = await fetch_binance_price(args.binance_symbol)
+        ref_price, ref_source = await fetch_binance_price(args.binance_symbol)
 
     rows = []
     for p in perp:
@@ -134,7 +154,8 @@ async def main():
     print("-" * 80)
 
     if ref_price > 0 and args.binance_symbol:
-        print(f"参考: 当前 Binance {args.binance_symbol} 价格 ≈ {ref_price:.6f}")
+        src_label = "现货(spot)" if ref_source == "spot" else ("合约(futures)" if ref_source == "futures" else ref_source or "unknown")
+        print(f"参考: 当前 Binance {args.binance_symbol} 价格 ≈ {ref_price:.6f} (来源: {src_label})")
         top_n = max(1, min(args.top, len(rows)))
         top_candidates = sorted(
             [r for r in rows if r[3] is not None],
