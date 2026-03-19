@@ -141,6 +141,8 @@ class NadoAdapter(ExchangeInterface):
         self.isolated_margin = self._env_bool("NADO_ISOLATED", default=False)
         # 可选：isolated 初始保证金（USDC，x6 精度编码到 appendix 的高 64 位）
         self.isolated_margin_usdc = float(os.getenv("NADO_ISOLATED_MARGIN_USDC", "0") or 0)
+        # 标记 isolated 保证金是否已划拨（首单成功 or 启动时已有持仓），后续开仓不再重复携带
+        self._iso_margin_seeded = False
 
         # Initialize signing account from private key（签名用密钥，可以是主钱包，也可以是 linked signer / 1CT）
         if self.private_key:
@@ -562,17 +564,20 @@ class NadoAdapter(ExchangeInterface):
             
             logger.debug(f"下单: is_ask={is_ask}, price_x18={price_x18}, amount_x18={amount_x18}, reduce_only={reduce_only}")
 
-            # Build appendix (POST_ONLY by default, with optional reduce_only + isolated margin)
+            # 只在首次建仓时携带 isolated_margin；仓位已建立后不再重复划拨
             isolated_margin_x6 = 0
-            if self.isolated_margin and not reduce_only and self.isolated_margin_usdc > 0:
+            if (self.isolated_margin and not reduce_only
+                    and self.isolated_margin_usdc > 0
+                    and not self._iso_margin_seeded):
                 isolated_margin_x6 = int(self.isolated_margin_usdc * 1_000_000)
+                logger.info("首次 isolated 开仓，appendix 携带 margin=%s USDC", self.isolated_margin_usdc)
 
             appendix = self._build_appendix(
                 order_type=3,
                 isolated=self.isolated_margin,
                 reduce_only=reduce_only,
                 isolated_margin_x6=isolated_margin_x6,
-            )  # POST_ONLY
+            )
 
             # Order message for signing
             order_message = {
@@ -626,9 +631,11 @@ class NadoAdapter(ExchangeInterface):
 
             if response.get('status') == 'success':
                 digest = response.get('data', {}).get('digest', '')
-                # Use nonce as client order id
-                client_order_id = str(nonce & ((1 << 20) - 1))  # Use last 20 bits as ID
+                client_order_id = str(nonce & ((1 << 20) - 1))
                 self.order_digests[client_order_id] = digest
+                if isolated_margin_x6 > 0 and not self._iso_margin_seeded:
+                    self._iso_margin_seeded = True
+                    logger.info("isolated margin 已划拨（首单成功），后续开仓不再携带 margin")
                 logger.info(f"订单下单成功: digest={digest}")
                 return True, client_order_id, "", None
             else:
@@ -1631,6 +1638,25 @@ class NadoAdapter(ExchangeInterface):
         except Exception as e:
             logger.error(f"关闭连接时发生错误: {e}")
 
+    async def _probe_isolated_position(self) -> None:
+        """启动时探测是否已持有当前 product 的仓位，有则标记 isolated margin 已划拨。"""
+        try:
+            positions = await self.get_positions()
+            for pos in positions.values():
+                if pos.get('product_id') == self.product_id and pos.get('size', 0) != 0:
+                    self._iso_margin_seeded = True
+                    logger.info(
+                        "isolated margin 已划拨（启动时检测到持仓）: product_id=%s, size=%s",
+                        self.product_id, pos['size'],
+                    )
+                    return
+            logger.info(
+                "isolated margin 尚未划拨（无持仓）: product_id=%s, 首笔开仓单将携带 %s USDC",
+                self.product_id, self.isolated_margin_usdc,
+            )
+        except Exception as e:
+            logger.warning("探测 isolated 持仓失败（首单仍携带 margin）: %s", e)
+
     async def initialize_client(self) -> None:
         """Initialize the exchange client."""
         try:
@@ -1661,6 +1687,10 @@ class NadoAdapter(ExchangeInterface):
 
             logger.info(f"Nado 客户端已初始化: env={self.env}, chain_id={self.chain_id}, endpoint={self.endpoint_address}")
             logger.info(f"产品 {self.product_id} 参数: price_increment={self.price_increment}, size_increment={self.size_increment}, min_size={self.min_size}")
+
+            # 检查是否已有 isolated 持仓，若有则标记保证金已划拨
+            if self.isolated_margin and self.isolated_margin_usdc > 0:
+                await self._probe_isolated_position()
         except Exception as e:
             logger.error(f"客户端初始化失败: {e}", exc_info=True)
             # Set fallback values based on environment
