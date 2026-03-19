@@ -143,6 +143,8 @@ class NadoAdapter(ExchangeInterface):
         self.isolated_margin_usdc = float(os.getenv("NADO_ISOLATED_MARGIN_USDC", "0") or 0)
         # 标记 isolated 保证金是否已划拨（首单成功 or 启动时已有持仓），后续开仓不再重复携带
         self._iso_margin_seeded = False
+        # 缓存 isolated 子账号 hex（启动时通过 archive API 发现）
+        self._iso_subaccount_hexes: list = []
 
         # Initialize signing account from private key（签名用密钥，可以是主钱包，也可以是 linked signer / 1CT）
         if self.private_key:
@@ -1012,37 +1014,21 @@ class NadoAdapter(ExchangeInterface):
             return []
 
     async def get_positions(self) -> Dict[str, dict]:
-        """Get positions."""
+        """Get positions (including isolated subaccount positions)."""
         try:
             sender = self._get_sender_bytes32()
-            params = {"subaccount": sender}
-            data = await self._rest_query("subaccount_info", params)
+            positions = await self._query_subaccount_positions(sender)
 
-            positions = {}
-            perp_balances = data.get('perp_balances', [])
-            perp_products = data.get('perp_products', [])
-
-            for balance in perp_balances:
-                product_id = balance.get('product_id')
-                amount = self._from_x18(int(balance.get('balance', {}).get('amount', '0')))
-                v_quote = self._from_x18(int(balance.get('balance', {}).get('v_quote_balance', '0')))
-
-                # Find product info
-                product_info = next((p for p in perp_products if p.get('product_id') == product_id), {})
-                oracle_price = self._from_x18(int(product_info.get('oracle_price_x18', '0')))
-
-                if amount != 0:
-                    symbol = self._extract_product_symbol(product_info) or self.PRODUCT_ID_TO_SYMBOL.get(product_id, f"PRODUCT_{product_id}")
-                    positions[symbol] = {
-                        'instrument': symbol,
-                        'product_id': product_id,
-                        'size': amount,
-                        'sign': 1 if amount > 0 else (-1 if amount < 0 else 0),
-                        'notional': abs(amount * oracle_price),
-                        'entry_price': -v_quote / amount if amount != 0 else 0,
-                        'mark_price': oracle_price,
-                        'unrealized_pnl': amount * oracle_price + v_quote if amount != 0 else 0
-                    }
+            if self.isolated_margin and self._iso_subaccount_hexes:
+                for iso_hex in self._iso_subaccount_hexes:
+                    iso_pos = await self._query_subaccount_positions(iso_hex)
+                    for sym, pos in iso_pos.items():
+                        if sym not in positions:
+                            positions[sym] = pos
+                        else:
+                            existing = positions[sym]
+                            if existing.get('size', 0) == 0 and pos.get('size', 0) != 0:
+                                positions[sym] = pos
 
             return positions
         except Exception as e:
@@ -1645,6 +1631,64 @@ class NadoAdapter(ExchangeInterface):
         except Exception as e:
             logger.error(f"关闭连接时发生错误: {e}")
 
+    async def _discover_isolated_subaccounts(self) -> list:
+        """通过 archive API 发现 owner 名下的 isolated 子账号。"""
+        if not self.owner_address:
+            return []
+        try:
+            session = await self._get_session()
+            payload = {"subaccounts": {"address": self.owner_address}}
+            async with session.post(
+                self.archive_url,
+                json=payload,
+                headers={"Accept-Encoding": "gzip, deflate, br"},
+            ) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    logger.warning("archive subaccounts 查询失败: HTTP %s: %s", resp.status, text[:200])
+                    return []
+                data = await resp.json(content_type=None)
+                subaccounts = data.get("subaccounts", [])
+                isolated = [s["subaccount"] for s in subaccounts if s.get("isolated")]
+                if isolated:
+                    logger.info("发现 %d 个 isolated 子账号: %s", len(isolated), isolated)
+                return isolated
+        except Exception as e:
+            logger.warning("发现 isolated 子账号失败: %s", e)
+            return []
+
+    async def _query_subaccount_positions(self, subaccount_hex: str) -> Dict[str, dict]:
+        """查询指定子账号的持仓。"""
+        try:
+            data = await self._rest_query("subaccount_info", {"subaccount": subaccount_hex})
+            positions = {}
+            perp_balances = data.get('perp_balances', [])
+            perp_products = data.get('perp_products', [])
+
+            for balance in perp_balances:
+                product_id = balance.get('product_id')
+                amount = self._from_x18(int(balance.get('balance', {}).get('amount', '0')))
+                v_quote = self._from_x18(int(balance.get('balance', {}).get('v_quote_balance', '0')))
+                product_info = next((p for p in perp_products if p.get('product_id') == product_id), {})
+                oracle_price = self._from_x18(int(product_info.get('oracle_price_x18', '0')))
+
+                if amount != 0:
+                    symbol = self._extract_product_symbol(product_info) or self.PRODUCT_ID_TO_SYMBOL.get(product_id, f"PRODUCT_{product_id}")
+                    positions[symbol] = {
+                        'instrument': symbol,
+                        'product_id': product_id,
+                        'size': amount,
+                        'sign': 1 if amount > 0 else (-1 if amount < 0 else 0),
+                        'notional': abs(amount * oracle_price),
+                        'entry_price': -v_quote / amount if amount != 0 else 0,
+                        'mark_price': oracle_price,
+                        'unrealized_pnl': amount * oracle_price + v_quote if amount != 0 else 0,
+                    }
+            return positions
+        except Exception as e:
+            logger.error("查询子账号 %s 仓位失败: %s", subaccount_hex[:20], e)
+            return {}
+
     async def _probe_isolated_position(self) -> None:
         """启动时探测是否已持有当前 product 的仓位，有则标记 isolated margin 已划拨。"""
         try:
@@ -1695,9 +1739,11 @@ class NadoAdapter(ExchangeInterface):
             logger.info(f"Nado 客户端已初始化: env={self.env}, chain_id={self.chain_id}, endpoint={self.endpoint_address}")
             logger.info(f"产品 {self.product_id} 参数: price_increment={self.price_increment}, size_increment={self.size_increment}, min_size={self.min_size}")
 
-            # 检查是否已有 isolated 持仓，若有则标记保证金已划拨
-            if self.isolated_margin and self.isolated_margin_usdc > 0:
-                await self._probe_isolated_position()
+            # isolated 模式：先发现 isolated 子账号，再探测持仓
+            if self.isolated_margin:
+                self._iso_subaccount_hexes = await self._discover_isolated_subaccounts()
+                if self.isolated_margin_usdc > 0:
+                    await self._probe_isolated_position()
         except Exception as e:
             logger.error(f"客户端初始化失败: {e}", exc_info=True)
             # Set fallback values based on environment

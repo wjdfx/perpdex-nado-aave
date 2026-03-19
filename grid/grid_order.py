@@ -420,12 +420,14 @@ async def check_current_orders(position_delta: float = 0.0):
                         break
                 await _cancel_orders(cancel_orders)
 
-    # 交易暂停清理
+    # 交易暂停清理：只取消开仓侧订单；有持仓时保留平仓侧订单以保护仓位
     if trading_state.grid_pause:
-        if len(trading_state.buy_orders) > 0:
-            await _cancel_orders(list(trading_state.buy_orders.keys()))
-        if len(trading_state.sell_orders) > 0:
-            await _cancel_orders(list(trading_state.sell_orders.keys()))
+        if len(trading_state.open_orders) > 0:
+            logger.info("暂停清理: 取消 %d 个开仓侧订单", len(trading_state.open_orders))
+            await _cancel_orders(list(trading_state.open_orders.keys()))
+        if len(trading_state.close_orders) > 0 and trading_state.current_position_size == 0:
+            logger.info("暂停清理: 无持仓，取消 %d 个平仓侧订单", len(trading_state.close_orders))
+            await _cancel_orders(list(trading_state.close_orders.keys()))
 
     # 检查重复订单
     await _check_duplicate_orders(trading_state.buy_orders)
