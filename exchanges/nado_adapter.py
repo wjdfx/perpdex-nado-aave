@@ -139,6 +139,8 @@ class NadoAdapter(ExchangeInterface):
 
         # Margin mode: some products are isolated-only (error_code=2122)
         self.isolated_margin = self._env_bool("NADO_ISOLATED", default=False)
+        # 可选：isolated 初始保证金（USDC，x6 精度编码到 appendix 的高 64 位）
+        self.isolated_margin_usdc = float(os.getenv("NADO_ISOLATED_MARGIN_USDC", "0") or 0)
 
         # Initialize signing account from private key（签名用密钥，可以是主钱包，也可以是 linked signer / 1CT）
         if self.private_key:
@@ -319,7 +321,8 @@ class NadoAdapter(ExchangeInterface):
         order_type: int = 3,  # POST_ONLY by default
         isolated: bool = False,
         reduce_only: bool = False,
-        version: int = 1
+        version: int = 1,
+        isolated_margin_x6: int = 0,
     ) -> int:
         """
         Build order appendix.
@@ -328,6 +331,7 @@ class NadoAdapter(ExchangeInterface):
         - Isolated (1 bit, 8): whether isolated margin
         - Order Type (2 bits, 9–10): 0=DEFAULT, 1=IOC, 2=FOK, 3=POST_ONLY
         - Reduce Only (1 bit, 11): only decreases existing position
+        - Value (64 bits, 64–127): isolated_margin_x6 / TWAP params 等扩展值
         """
         appendix = version  # bits 0-7
         if isolated:
@@ -335,6 +339,9 @@ class NadoAdapter(ExchangeInterface):
         appendix |= (order_type << 9)  # bits 9-10
         if reduce_only:
             appendix |= (1 << 11)  # bit 11
+        if isolated and isolated_margin_x6 > 0:
+            # 高 64 位承载 value，isolated_margin 采用 x6 精度（USDC）
+            appendix |= (int(isolated_margin_x6) << 64)
         return appendix
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -556,10 +563,15 @@ class NadoAdapter(ExchangeInterface):
             logger.debug(f"下单: is_ask={is_ask}, price_x18={price_x18}, amount_x18={amount_x18}, reduce_only={reduce_only}")
 
             # Build appendix (POST_ONLY by default, with optional reduce_only + isolated margin)
+            isolated_margin_x6 = 0
+            if self.isolated_margin and not reduce_only and self.isolated_margin_usdc > 0:
+                isolated_margin_x6 = int(self.isolated_margin_usdc * 1_000_000)
+
             appendix = self._build_appendix(
                 order_type=3,
                 isolated=self.isolated_margin,
                 reduce_only=reduce_only,
+                isolated_margin_x6=isolated_margin_x6,
             )  # POST_ONLY
 
             # Order message for signing
