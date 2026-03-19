@@ -99,7 +99,9 @@ class BinanceMarketData:
         """
         self.api_key = api_key
         self.api_secret = api_secret
-        self.base_url = "https://api.binance.com"
+        # 现货与合约使用不同域名/路径
+        self.spot_base_url = "https://api.binance.com"
+        self.futures_base_url = "https://fapi.binance.com"
         self.detector = detector
 
     async def stream_price(
@@ -165,7 +167,14 @@ class BinanceMarketData:
                 print(f"WebSocket异常[{exc_type}]: {exc!r}，{reconnect_delay}s后重连……")
                 await asyncio.sleep(reconnect_delay)
 
-    def get_klines(self, symbol: str, interval: str, limit: int = 100, **kwargs) -> List[Dict]:
+    def get_klines(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int = 100,
+        market: str = "spot",
+        **kwargs
+    ) -> List[Dict]:
         """
         获取K线数据
         
@@ -178,7 +187,16 @@ class BinanceMarketData:
         Returns:
             List[Dict]: K线数据列表
         """
-        endpoint = f"/api/v3/klines"
+        market = (market or "spot").strip().lower()
+        if market not in ("spot", "futures"):
+            raise ValueError(f"Unsupported Binance market: {market} (use spot|futures)")
+
+        if market == "spot":
+            base_url = self.spot_base_url
+            endpoint = "/api/v3/klines"
+        else:
+            base_url = self.futures_base_url
+            endpoint = "/fapi/v1/klines"
         timeout = kwargs.pop("timeout", 15)
         params = {
             "symbol": symbol,
@@ -187,7 +205,7 @@ class BinanceMarketData:
             **kwargs
         }
         
-        url = self.base_url + endpoint
+        url = base_url + endpoint
         response = requests.get(url, params=params, timeout=timeout)
         
         if response.status_code != 200:
@@ -216,7 +234,14 @@ class BinanceMarketData:
         
         return klines
     
-    def get_klines_df(self, symbol: str, interval: str, limit: int = 100, **kwargs) -> pd.DataFrame:
+    def get_klines_df(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int = 100,
+        market: str = "spot",
+        **kwargs
+    ) -> pd.DataFrame:
         """
         获取K线数据并转换为DataFrame
         
@@ -229,7 +254,7 @@ class BinanceMarketData:
         Returns:
             pd.DataFrame: K线数据DataFrame
         """
-        klines = self.get_klines(symbol, interval, limit, **kwargs)
+        klines = self.get_klines(symbol, interval, limit, market=market, **kwargs)
         df = pd.DataFrame(klines)
         
         # 转换时间戳为可读格式

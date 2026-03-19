@@ -23,6 +23,7 @@ class GridTrading:
         exchange: ExchangeInterface,
         market_id: int = 0,
         risk_binance_symbol: str = "AAVEUSDT",
+        risk_binance_market: str = "spot",
     ):
         """
         初始化网格交易类
@@ -34,6 +35,7 @@ class GridTrading:
         self.exchange = exchange
         self.market_id = market_id
         self.risk_binance_symbol = risk_binance_symbol.strip().upper()
+        self.risk_binance_market = (risk_binance_market or "spot").strip().lower()
 
         # 价格和数量乘数（与quant.py保持一致）
         self.base_amount_multiplier = pow(10, 4)
@@ -311,6 +313,7 @@ class GridTrading:
                 symbol=binance_symbol,
                 interval=binance_interval,
                 limit=count_back,
+                market=self.risk_binance_market,
                 timeout=15,
             )
             

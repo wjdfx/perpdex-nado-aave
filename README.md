@@ -23,6 +23,7 @@ pip install -r requirements.txt
 - `NADO_ENV=testnet` 或 `mainnet`
 - `NADO_SYMBOL=AAVEUSDT0`
 - `RISK_BINANCE_SYMBOL=AAVEUSDT`
+- `RISK_BINANCE_MARKET=spot`（可选：`spot` 现货 / `futures` 合约，默认 spot）
 - `RISK_KLINE_COUNT=100`
 - `NADO_PRODUCT_ID=`（可留空，程序会在启动时自动按 `NADO_SYMBOL` 解析）
 
@@ -45,4 +46,4 @@ python grid.py
 
 - 程序仅支持 `nado`。
 - 默认交易标的是 `AAVEUSDT0`（建议显式设置 `NADO_PRODUCT_ID=26`）。
-- 风控 K 线数据源由 `RISK_BINANCE_SYMBOL` 配置决定（例如 `AAVEUSDT`）。
+- 风控 K 线数据源由 `RISK_BINANCE_SYMBOL` 配置决定（例如 `AAVEUSDT`），市场（现货/合约）由 `RISK_BINANCE_MARKET` 决定。

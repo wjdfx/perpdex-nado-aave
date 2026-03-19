@@ -350,13 +350,16 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
         exchange=exchange,
         market_id=CONFIG["MARKET_ID"],
         risk_binance_symbol=CONFIG["RISK_BINANCE_SYMBOL"],
+        risk_binance_market=CONFIG.get("RISK_BINANCE_MARKET", "spot"),
     )
 
     # 明确打印风控数据源与交易标的，便于核对「配置是 ENA 但实际拿到 XLP」等不一致
     binance_symbol = CONFIG.get("RISK_BINANCE_SYMBOL", "")
+    binance_market = CONFIG.get("RISK_BINANCE_MARKET", "spot")
     logger.info(
-        "标的核对: 风控/K线数据源=Binance %s | 交易标的=Nado product_id=%s (target_symbol=%s)",
+        "标的核对: 风控/K线数据源=Binance %s (%s) | 交易标的=Nado product_id=%s (target_symbol=%s)",
         binance_symbol or "未配置",
+        binance_market,
         getattr(exchange, "product_id", "?"),
         getattr(exchange, "target_symbol", "?"),
     )

@@ -36,6 +36,7 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "ALER_POSITION": float(_get_required_env("ALER_POSITION")),  # 警告仓位限制
         "MARKET_ID": int(_get_required_env("MARKET_ID")),  # 市场ID
         "RISK_BINANCE_SYMBOL": _get_required_env("RISK_BINANCE_SYMBOL"),  # 风控K线Binance交易对（如 AAVEUSDT）
+        "RISK_BINANCE_MARKET": os.getenv("RISK_BINANCE_MARKET", "spot").strip().lower(),  # 风控K线Binance市场：spot|futures
         "RISK_KLINE_COUNT": int(_get_required_env("RISK_KLINE_COUNT")),  # 风控K线每次拉取根数（1m/15m共用）
         "ATR_THRESHOLD": float(_get_required_env("ATR_THRESHOLD")),  # ATR波动阈值
         "RAPID_MOVE_THRESHOLD_PCT": float(_get_required_env("RAPID_MOVE_THRESHOLD_PCT")),  # 急跌/急涨阈值（百分比）
