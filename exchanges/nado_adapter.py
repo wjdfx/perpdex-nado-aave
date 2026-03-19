@@ -633,9 +633,6 @@ class NadoAdapter(ExchangeInterface):
                 digest = response.get('data', {}).get('digest', '')
                 client_order_id = str(nonce & ((1 << 20) - 1))
                 self.order_digests[client_order_id] = digest
-                if isolated_margin_x6 > 0 and not self._iso_margin_seeded:
-                    self._iso_margin_seeded = True
-                    logger.info("isolated margin 已划拨（首单成功），后续开仓不再携带 margin")
                 logger.info(f"订单下单成功: digest={digest}")
                 return True, client_order_id, "", None
             else:
@@ -1526,7 +1523,11 @@ class NadoAdapter(ExchangeInterface):
             }
             
             logger.info(f"处理成交: client_order_id={client_order_id}, digest={digest}, side={'买' if is_bid else '卖'}, price={price}, amount={amount_float}, status={ccxt_order['status']}")
-            
+
+            if self.isolated_margin and not self._iso_margin_seeded and is_bid:
+                self._iso_margin_seeded = True
+                logger.info("isolated margin 已划拨（首笔买单成交），后续开仓不再携带 margin")
+
             callback = self.callbacks['orders']
             if asyncio.iscoroutinefunction(callback):
                 asyncio.create_task(callback(self.address, [ccxt_order]))
