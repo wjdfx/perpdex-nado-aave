@@ -71,6 +71,17 @@ class NadoAdapter(ExchangeInterface):
         raw = os.getenv(name, "").strip()
         if not raw:
             return default
+
+    @staticmethod
+    def _env_bool(name: str, default: bool = False) -> bool:
+        raw = (os.getenv(name, "").strip() or "").lower()
+        if raw == "":
+            return default
+        if raw in ("1", "true", "yes", "y", "on"):
+            return True
+        if raw in ("0", "false", "no", "n", "off"):
+            return False
+        return default
         try:
             value = int(raw)
             if value < min_value:
@@ -125,6 +136,9 @@ class NadoAdapter(ExchangeInterface):
         self.contracts_query_retry_delay_ms = self._env_int(
             "NADO_CONTRACTS_QUERY_RETRY_DELAY_MS", 400, min_value=0
         )
+
+        # Margin mode: some products are isolated-only (error_code=2122)
+        self.isolated_margin = self._env_bool("NADO_ISOLATED", default=False)
 
         # Initialize signing account from private key（签名用密钥，可以是主钱包，也可以是 linked signer / 1CT）
         if self.private_key:
@@ -541,8 +555,12 @@ class NadoAdapter(ExchangeInterface):
             
             logger.debug(f"下单: is_ask={is_ask}, price_x18={price_x18}, amount_x18={amount_x18}, reduce_only={reduce_only}")
 
-            # Build appendix (POST_ONLY by default, with optional reduce_only)
-            appendix = self._build_appendix(order_type=3, reduce_only=reduce_only)  # POST_ONLY
+            # Build appendix (POST_ONLY by default, with optional reduce_only + isolated margin)
+            appendix = self._build_appendix(
+                order_type=3,
+                isolated=self.isolated_margin,
+                reduce_only=reduce_only,
+            )  # POST_ONLY
 
             # Order message for signing
             order_message = {
@@ -659,8 +677,8 @@ class NadoAdapter(ExchangeInterface):
             if is_ask:
                 amount_x18 = -amount_x18
 
-            # Build appendix with IOC order type
-            appendix = self._build_appendix(order_type=1)  # IOC
+            # Build appendix with IOC order type + isolated margin
+            appendix = self._build_appendix(order_type=1, isolated=self.isolated_margin)  # IOC
 
             order_message = {
                 "sender": sender,

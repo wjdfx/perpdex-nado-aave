@@ -22,6 +22,7 @@ pip install -r requirements.txt
 - `NADO_PRIVATE_KEY=...`（EIP712 签名用私钥）
 - `NADO_ENV=testnet` 或 `mainnet`
 - `NADO_SYMBOL=AAVEUSDT0`
+- `NADO_ISOLATED=false`（可选：逐仓下单开关；若该合约是 isolated-only 且报 `error_code=2122`，设为 true）
 - `RISK_BINANCE_SYMBOL=AAVEUSDT`
 - `RISK_BINANCE_MARKET=spot`（可选：`spot` 现货 / `futures` 合约，默认 spot）
 - `RISK_KLINE_COUNT=100`
