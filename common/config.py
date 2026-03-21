@@ -11,8 +11,8 @@ load_dotenv()
 # API配置（兼容保留）
 BASE_URL = os.getenv('BASE_URL', "https://gateway.test.nado.xyz/v1")
 
-# 交易所配置
-EXCHANGE_TYPE = os.getenv('EXCHANGE_TYPE', 'nado')
+# 交易所配置：nado_perp 合约 | nado_spot 现货（二选一）
+EXCHANGE_TYPE = os.getenv('EXCHANGE_TYPE', 'nado_perp')
 
 # 兼容保留字段（Nado 不使用）
 L1_ADDRESS = os.getenv('L1_ADDRESS', '')

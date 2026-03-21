@@ -11,7 +11,9 @@ load_dotenv()
 
 
 class ExchangeType(Enum):
-    NADO = "nado"
+    """Nado 交易所类型：合约与现货二选一"""
+    NADO_PERP = "nado_perp"   # 永续合约
+    NADO_SPOT = "nado_spot"   # 现货
 
 
 def _get_required_env(key: str) -> str:
@@ -57,18 +59,28 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "DISAPPEARED_ORDER_CONFIRM_SEC": float(os.getenv("DISAPPEARED_ORDER_CONFIRM_SEC", "3")),  # REST 检测到订单消失后延迟确认秒（默认3），避免短暂漏单被当成交
     }
     
-    return {"nado": common_config.copy()}
+    common = common_config.copy()
+    return {
+        "nado_perp": common.copy(),
+        "nado_spot": common.copy(),
+    }
 
 
 def validate_exchange_type(exchange_type: str) -> str:
     """
-    Validate that the exchange type is one of the allowed values
+    校验交易所类型。合约与现货二选一：nado_perp | nado_spot
     """
+    t = (exchange_type or "").strip().lower()
+    if t == "nado":
+        print("Error: EXCHANGE_TYPE 必须明确指定 nado_perp（合约）或 nado_spot（现货），不能用 nado")
+        print("  合约: EXCHANGE_TYPE=nado_perp")
+        print("  现货: EXCHANGE_TYPE=nado_spot")
+        sys.exit(1)
     try:
-        return ExchangeType(exchange_type).value
+        return ExchangeType(t).value
     except ValueError:
-        allowed_values = [e.value for e in ExchangeType]
-        print(f"Error: Invalid exchange type '{exchange_type}'. Allowed values are: {allowed_values}")
+        allowed = [e.value for e in ExchangeType]
+        print(f"Error: EXCHANGE_TYPE='{exchange_type}' 无效。允许: {allowed}")
         sys.exit(1)
 
 

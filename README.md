@@ -16,7 +16,7 @@ pip install -r requirements.txt
 
 可参考仓库根目录 `.env.example`：
 
-- `EXCHANGE_TYPE=nado`
+- `EXCHANGE_TYPE=nado_perp` 或 `nado_spot`（合约与现货二选一）
 - `MARKET_ID=0`
 - `NADO_OWNER_ADDRESS=...`（可选，子账号 owner 地址）
 - `NADO_PRIVATE_KEY=...`（EIP712 签名用私钥）
@@ -46,6 +46,6 @@ python grid.py
 
 ## 说明
 
-- 程序仅支持 `nado`。
+- 程序支持 Nado 永续合约（`nado_perp`）与现货（`nado_spot`），通过 `EXCHANGE_TYPE` 二选一。
 - 默认交易标的是 `AAVEUSDT0`（建议显式设置 `NADO_PRODUCT_ID=26`）。
 - 风控 K 线数据源由 `RISK_BINANCE_SYMBOL` 配置决定（例如 `AAVEUSDT`），市场（现货/合约）由 `RISK_BINANCE_MARKET` 决定。

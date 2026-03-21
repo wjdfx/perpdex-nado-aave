@@ -318,6 +318,9 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
     )
 
     subaccount_name = (os.getenv("NADO_SUBACCOUNT_NAME") or "default").strip()
+    is_spot = _exchange_type == "nado_spot"
+    if is_spot:
+        logger.info("使用 Nado 现货模式（EXCHANGE_TYPE=nado_spot）")
     exchange_adapter = create_exchange_adapter(
         exchange_type=_exchange_type,
         market_id=CONFIG["MARKET_ID"],
@@ -334,8 +337,8 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
         logger.exception(f"创建认证令牌失败: {auth}")
         return
 
-    # Nado: 启动时打印主账号与 linked signer，便于核对配置
-    if _exchange_type == "nado" and hasattr(exchange, "owner_address"):
+    # Nado 合约/现货: 启动时打印主账号与 linked signer，便于核对配置
+    if _exchange_type in ("nado_perp", "nado_spot") and hasattr(exchange, "owner_address"):
         sub_name = getattr(exchange, "subaccount_name", "default")
         logger.info("账户信息: 主账号(子账号归属)=%s, 子账号名=%s", getattr(exchange, "owner_address", "N/A"), sub_name)
         if getattr(exchange, "address", None):
@@ -360,14 +363,16 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
     # 明确打印风控数据源与交易标的，便于核对「配置是 ENA 但实际拿到 XLP」等不一致
     binance_symbol = CONFIG.get("RISK_BINANCE_SYMBOL", "")
     binance_market = CONFIG.get("RISK_BINANCE_MARKET", "spot")
+    exchange_label = "Nado Spot" if is_spot else "Nado"
     logger.info(
-        "标的核对: 风控/K线数据源=Binance %s (%s) | 交易标的=Nado product_id=%s (target_symbol=%s)",
+        "标的核对: 风控/K线数据源=Binance %s (%s) | 交易标的=%s product_id=%s (target_symbol=%s)",
         binance_symbol or "未配置",
         binance_market,
+        exchange_label,
         getattr(exchange, "product_id", "?"),
         getattr(exchange, "target_symbol", "?"),
     )
-    if _exchange_type == "nado" and hasattr(exchange, "PRODUCT_ID_TO_SYMBOL"):
+    if _exchange_type in ("nado_perp", "nado_spot") and hasattr(exchange, "PRODUCT_ID_TO_SYMBOL"):
         pid = getattr(exchange, "product_id", None)
         name = exchange.PRODUCT_ID_TO_SYMBOL.get(pid, "未知") if pid is not None else "未知"
         logger.info("标的核对: Nado product_id=%s 当前映射合约名=%s（若与预期不符请检查 NADO_PRODUCT_ID/NADO_SYMBOL）", pid, name)
