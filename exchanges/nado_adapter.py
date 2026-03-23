@@ -577,27 +577,36 @@ class NadoAdapter(ExchangeInterface):
             #   后续补单（池已初始化）→ 携带 notional (price*amount) 作为增量保证金
             #   平仓单 (reduce_only)  → 不携带
             isolated_margin_x6 = 0
+            margin_mode_for_log: str = ""
+
             if self.isolated_margin and not reduce_only:
                 if not self._iso_margin_seeded and self.isolated_margin_usdc > 0:
                     isolated_margin_x6 = int(self.isolated_margin_usdc * 1_000_000)
+                    margin_mode_for_log = "首笔建仓(NADO_ISOLATED_MARGIN_USDC)"
                     logger.info("首次 isolated 开仓，appendix 携带 margin=%s USDC", self.isolated_margin_usdc)
                 elif self._iso_margin_seeded:
                     # isolated 池已建立后：按配置选择每笔保证金写入策略
                     mode = self.isolated_margin_after_seed_mode
                     if mode == "fixed":
                         margin_usdc = self.isolated_margin_usdc
-                        logger.debug("补单携带 fixed margin=%.2f USDC", margin_usdc)
+                        margin_mode_for_log = "fixed"
+                        logger.info("isolated 补单: after_seed=fixed, 本笔写入 appendix ≈ %.6f USDC", margin_usdc)
                     elif mode == "step":
                         margin_usdc = self.isolated_margin_step_usdc
                         # 若未配置 step，则给一个保底，避免 margin=0 导致健康检查失败
                         if margin_usdc <= 0:
                             margin_usdc = max(price * amount * 0.5, 20.0)
-                        logger.debug("补单携带 step margin=%.2f USDC", margin_usdc)
+                        margin_mode_for_log = "step"
+                        logger.info("isolated 补单: after_seed=step, 本笔写入 appendix ≈ %.6f USDC", margin_usdc)
                     else:
                         # 默认 notional: 约等于该笔名义价值
                         per_order_margin = price * amount
                         margin_usdc = per_order_margin
-                        logger.debug("补单携带 per-order margin=%.2f USDC (notional)", per_order_margin)
+                        margin_mode_for_log = "notional(price*amount)"
+                        logger.info(
+                            "isolated 补单: after_seed=notional, 本笔写入 appendix ≈ %.6f USDC (price*amount)",
+                            margin_usdc,
+                        )
 
                     isolated_margin_x6 = int(margin_usdc * 1_000_000)
 
@@ -607,6 +616,29 @@ class NadoAdapter(ExchangeInterface):
                 reduce_only=reduce_only,
                 isolated_margin_x6=isolated_margin_x6,
             )
+
+            # 仅 isolated 模式打 INFO：cross 全仓不输出这些对账日志
+            if self.isolated_margin:
+                side_cn = "卖" if is_ask else "买"
+                if reduce_only:
+                    logger.info(
+                        "isolated 限价单汇总: side=%s price=%.8g amount=%.8g reduce_only=True → "
+                        "appendix 高64位 isolated_margin=0（不在本单追加保证金，仅减仓） product_id=%s",
+                        side_cn, price, amount, self.product_id,
+                    )
+                else:
+                    logger.info(
+                        "isolated 限价单汇总: side=%s price=%.8g amount=%.8g reduce_only=False → "
+                        "isolated_margin_x6=%s ≈%.6f USDC | 模式=%s | _iso_margin_seeded=%s | product_id=%s",
+                        side_cn,
+                        price,
+                        amount,
+                        isolated_margin_x6,
+                        (isolated_margin_x6 / 1_000_000.0) if isolated_margin_x6 else 0.0,
+                        margin_mode_for_log or "—",
+                        self._iso_margin_seeded,
+                        self.product_id,
+                    )
 
             # Order message for signing
             order_message = {
