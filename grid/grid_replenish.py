@@ -15,6 +15,37 @@ from .grid_state import format_price_for_display, round_price_to_precision
 logger = logging.getLogger(__name__)
 
 
+def _stage1_paired_close_target_price(fill_price: float, open_side_is_ask: bool, step: float) -> float:
+    """
+    与 _place_paired_close_order_with_retry 的 stage「1x」首档目标价一致（calc_target_price(1)）。
+    """
+    if step <= 0:
+        return round_price_to_precision(float(fill_price))
+    if not open_side_is_ask:
+        return round_price_to_precision(float(fill_price) + float(step))
+    return round_price_to_precision(float(fill_price) - float(step))
+
+
+def _close_side_has_order_near_price(
+    trading_state,
+    target_price: float,
+    step: float,
+    open_side_is_ask: bool,
+) -> bool:
+    """
+    平仓侧是否已有与 target_price 在 0.5*step 内的挂单。
+    与大间距平仓补单 _over_range_replenish_close_order 的容差规则一致。
+    """
+    if step <= 0:
+        return False
+    close_side = trading_state.sell_orders if not open_side_is_ask else trading_state.buy_orders
+    existing_prices = list(close_side.values())
+    if not existing_prices:
+        return False
+    tol = float(step) * 0.5
+    return any(abs(float(p) - float(target_price)) <= tol for p in existing_prices)
+
+
 def calculate_grid_prices(
     current_price: float, grid_count: int, grid_spread: float
 ) -> List[float]:
@@ -90,7 +121,7 @@ async def replenish_grid(
 
     try:
         if filled_signal:
-            # 开仓侧被吃单：支持批量成交价，逐笔补单（_place_paired_close 内 step 容差去重）
+            # 开仓侧被吃单：支持批量成交价，逐笔补单（配对平仓在 _on_open_side_filled 内按首档价做 step 容差去重）
             prices = trade_prices if trade_prices else ([trade_price] if trade_price else [])
             for p in prices:
                 if float(p) > 0:
@@ -186,37 +217,53 @@ async def _on_open_side_filled(trade_price: float = 0.0):
                 fill_price_for_retry = float(_price) - step_for_backfill
             else:  # SHORT: _price≈fill-step
                 fill_price_for_retry = float(_price) + step_for_backfill
-        success, order_id, final_price = await _place_paired_close_order_with_retry(
-            is_ask=is_ask,
-            fill_price=fill_price_for_retry,
-            amount=amount,
+
+        step_pc = float(trading_state.base_grid_single_price or 0.0)
+        if step_pc <= 0:
+            step_pc = float(trading_state.active_grid_signle_price or 0.0)
+        stage1_target = _stage1_paired_close_target_price(
+            fill_price_for_retry, OPEN_SIDE_IS_ASK, step_pc
         )
-        if success:
-            trading_state.paired_close_retry_block_until = 0.0
-            trading_state.paired_close_target_price = 0.0
-            if order_id:
-                if is_ask:
-                    trading_state.sell_orders[order_id] = final_price
-                else:
-                    trading_state.buy_orders[order_id] = final_price
-                all_order_ids.append(order_id)
+        if _close_side_has_order_near_price(
+            trading_state, stage1_target, step_pc, OPEN_SIDE_IS_ASK
+        ):
             logger.info(
-                f"开仓侧被吃单补充订单成功 [%s]: 开仓单={len(open_orders)}, "
-                f"配对平仓单={1 if order_id else 0}, 订单ID={all_order_ids}",
-                getattr(trading_state, "_replenish_source", "WS"),
+                "配对平仓跳过: 首档目标价 %s 在容差 0.5*step(%s) 内已有平仓单，避免同价重复挂单",
+                format_price_for_display(stage1_target),
+                format_price_for_display(step_pc * 0.5),
             )
         else:
-            trading_state.paired_close_target_price = float(final_price)
-            trading_state.paired_close_retry_block_until = time.time() + 20
-            logger.error(
-                "开仓侧补充配对平仓单失败: is_ask=%s, final_price=%s",
-                is_ask,
-                final_price,
+            success, order_id, final_price = await _place_paired_close_order_with_retry(
+                is_ask=is_ask,
+                fill_price=fill_price_for_retry,
+                amount=amount,
             )
-            logger.warning(
-                "配对平仓单失败，已临时禁止大间距平仓补单20秒: target_price=%s",
-                final_price,
-            )
+            if success:
+                trading_state.paired_close_retry_block_until = 0.0
+                trading_state.paired_close_target_price = 0.0
+                if order_id:
+                    if is_ask:
+                        trading_state.sell_orders[order_id] = final_price
+                    else:
+                        trading_state.buy_orders[order_id] = final_price
+                    all_order_ids.append(order_id)
+                logger.info(
+                    f"开仓侧被吃单补充订单成功 [%s]: 开仓单={len(open_orders)}, "
+                    f"配对平仓单={1 if order_id else 0}, 订单ID={all_order_ids}",
+                    getattr(trading_state, "_replenish_source", "WS"),
+                )
+            else:
+                trading_state.paired_close_target_price = float(final_price)
+                trading_state.paired_close_retry_block_until = time.time() + 20
+                logger.error(
+                    "开仓侧补充配对平仓单失败: is_ask=%s, final_price=%s",
+                    is_ask,
+                    final_price,
+                )
+                logger.warning(
+                    "配对平仓单失败，已临时禁止大间距平仓补单20秒: target_price=%s",
+                    final_price,
+                )
 
 
 async def _place_paired_close_order_with_retry(
