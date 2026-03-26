@@ -196,30 +196,8 @@ async def check_order_fills(orders: dict):
                     f"已成交={filled_amount}, 剩余={remaining_amount}, 状态={status}"
                 )
                 # 如果订单在活跃列表中，需要处理部分成交
-                if is_ask and client_order_index in trading_state.sell_orders:
-                    # 部分成交的订单仍然在活跃列表中，暂时不删除
-                    # 但如果剩余数量很小（小于最小交易单位），可以视为完全成交
-                    if remaining_amount < GRID_CONFIG["GRID_AMOUNT"] * 0.1:  # 剩余小于10%视为完全成交
-                        logger.info(
-                            f"部分成交订单剩余量过小，视为完全成交: ID={client_order_index}, "
-                            f"剩余={remaining_amount}"
-                        )
-                        trading_state.last_filled_order_is_close_side = is_close_side_order
-                        trading_state.last_trade_price = float(price)
-                        trading_state.filled_count += 1
-                        del trading_state.sell_orders[client_order_index]
-                        replenish = True
-                elif not is_ask and client_order_index in trading_state.buy_orders:
-                    if remaining_amount < GRID_CONFIG["GRID_AMOUNT"] * 0.1:
-                        logger.info(
-                            f"部分成交订单剩余量过小，视为完全成交: ID={client_order_index}, "
-                            f"剩余={remaining_amount}"
-                        )
-                        trading_state.last_filled_order_is_close_side = is_close_side_order
-                        trading_state.last_trade_price = float(price)
-                        trading_state.filled_count += 1
-                        del trading_state.buy_orders[client_order_index]
-                        replenish = True
+                # 部分成交订单保持为活跃状态，等待交易所后续明确回报 closed/filled
+                # 或 remaining=0，再进行删除与补单，避免尾单被重复视为“完成”。
 
             # 如果订单已完全成交（状态为 closed/filled 或剩余为0）
             if (status in ["closed", "filled"] or is_fully_filled_or_cancelled) and filled_amount > 0:
