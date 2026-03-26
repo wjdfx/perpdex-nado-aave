@@ -399,8 +399,8 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
         counter = 0
         while trading_state.is_running:
             try:
-                # 每10秒打印一次网格状态
-                await asyncio.sleep(10)
+                # 每5秒打印一次网格状态
+                await asyncio.sleep(5)
 
                 # 记录本轮前的仓位，用于判断消失订单是否为成交（仓位增量信号）
                 previous_position_size = trading_state.current_position_size
