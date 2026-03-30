@@ -353,6 +353,8 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
             except Exception as e:
                 logger.warning("查询 linked signer 失败: %s", e)
 
+    risk_enabled = bool(CONFIG.get("RISK_ENABLED", True))
+
     grid_trading = GridTrading(
         exchange=exchange,
         market_id=CONFIG["MARKET_ID"],
@@ -364,14 +366,22 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
     binance_symbol = CONFIG.get("RISK_BINANCE_SYMBOL", "")
     binance_market = CONFIG.get("RISK_BINANCE_MARKET", "spot")
     exchange_label = "Nado Spot" if is_spot else "Nado"
-    logger.info(
-        "标的核对: 风控/K线数据源=Binance %s (%s) | 交易标的=%s product_id=%s (target_symbol=%s)",
-        binance_symbol or "未配置",
-        binance_market,
-        exchange_label,
-        getattr(exchange, "product_id", "?"),
-        getattr(exchange, "target_symbol", "?"),
-    )
+    if risk_enabled:
+        logger.info(
+            "标的核对: 风控/K线数据源=Binance %s (%s) | 交易标的=%s product_id=%s (target_symbol=%s)",
+            binance_symbol or "未配置",
+            binance_market,
+            exchange_label,
+            getattr(exchange, "product_id", "?"),
+            getattr(exchange, "target_symbol", "?"),
+        )
+    else:
+        logger.info(
+            "标的核对: 风控=已关闭 | 交易标的=%s product_id=%s (target_symbol=%s)",
+            exchange_label,
+            getattr(exchange, "product_id", "?"),
+            getattr(exchange, "target_symbol", "?"),
+        )
     if _exchange_type in ("nado_perp", "nado_spot") and hasattr(exchange, "PRODUCT_ID_TO_SYMBOL"):
         pid = getattr(exchange, "product_id", None)
         name = exchange.PRODUCT_ID_TO_SYMBOL.get(pid, "未知") if pid is not None else "未知"
@@ -391,7 +401,10 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
 
     try:
         await asyncio.sleep(2)
-        await _risk_check(start=True)
+        if risk_enabled:
+            await _risk_check(start=True)
+        else:
+            logger.info("风控已关闭：跳过启动时风控检查")
         if not await initialize_grid_trading(grid_trading):
             logger.error("网格交易初始化失败，退出")
             return
@@ -480,53 +493,58 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                     f"════════════════════════════════════════════════════"
                 )
 
-                # 获取K线数据
-                cs_1m = await asyncio.wait_for(
-                    grid_trading.candle_stick(
-                        market_id=CONFIG["MARKET_ID"],
-                        resolution="1m",
-                        count_back=int(CONFIG["RISK_KLINE_COUNT"]),
-                    ),
-                    timeout=20,
-                )
-                trading_state.candle_stick_1m = cs_1m
-
-                # 急跌/急涨 判断 (Rapid Market Move)
-                if trading_state.current_price:
-                    is_rapid, details = await is_rapid_market_move(
-                        cs_1m, trading_state.current_price
+                if risk_enabled:
+                    # 获取K线数据
+                    cs_1m = await asyncio.wait_for(
+                        grid_trading.candle_stick(
+                            market_id=CONFIG["MARKET_ID"],
+                            resolution="1m",
+                            count_back=int(CONFIG["RISK_KLINE_COUNT"]),
+                        ),
+                        timeout=20,
                     )
-                    if is_rapid:
-                        logger.info(f"⚠️ 警告：当前市场剧烈波动中, {details}")
+                    trading_state.candle_stick_1m = cs_1m
 
-                    # 波动检测 (Dynamic Step Adjustment)
-                    atr_value = details.get("atr", 0)
-                    trading_state.current_atr = atr_value
-
-                    if atr_value > CONFIG["ATR_THRESHOLD"]:
-                        min_step = trading_state.base_grid_single_price
-                        max_step = trading_state.base_grid_single_price * 30
-
-                        raw_step = 0.7 * round(atr_value, 2)
-                        trading_state.active_grid_signle_price = max(
-                            min_step, min(raw_step, max_step)
+                    # 急跌/急涨 判断 (Rapid Market Move)
+                    if trading_state.current_price:
+                        is_rapid, details = await is_rapid_market_move(
+                            cs_1m, trading_state.current_price
                         )
-                    else:
-                        trading_state.active_grid_signle_price = (
-                            trading_state.base_grid_single_price
-                        )
+                        if is_rapid:
+                            logger.info(f"⚠️ 警告：当前市场剧烈波动中, {details}")
 
-                        if trading_state.grid_open_spread_alert:
-                            # 开仓侧警告时增加价差
+                        # 波动检测 (Dynamic Step Adjustment)
+                        atr_value = details.get("atr", 0)
+                        trading_state.current_atr = atr_value
+
+                        if atr_value > CONFIG["ATR_THRESHOLD"]:
+                            min_step = trading_state.base_grid_single_price
+                            max_step = trading_state.base_grid_single_price * 30
+
+                            raw_step = 0.7 * round(atr_value, 2)
+                            trading_state.active_grid_signle_price = max(
+                                min_step, min(raw_step, max_step)
+                            )
+                        else:
                             trading_state.active_grid_signle_price = (
-                                trading_state.base_grid_single_price * 2
+                                trading_state.base_grid_single_price
                             )
 
-                # 定期风控检查 (每60秒)
-                if counter % 6 == 0:
-                    if trading_state.current_price and "details" in locals():
-                        logger.info("波动检测: %s", details | {"result": is_rapid})
-                    await asyncio.wait_for(_risk_check(), timeout=30)
+                            if trading_state.grid_open_spread_alert:
+                                # 开仓侧警告时增加价差
+                                trading_state.active_grid_signle_price = (
+                                    trading_state.base_grid_single_price * 2
+                                )
+
+                    # 定期风控检查 (每60秒)
+                    if counter % 6 == 0:
+                        if trading_state.current_price and "details" in locals():
+                            logger.info("波动检测: %s", details | {"result": is_rapid})
+                        await asyncio.wait_for(_risk_check(), timeout=30)
+                else:
+                    trading_state.candle_stick_1m = None
+                    trading_state.current_atr = 0.0
+                    trading_state.active_grid_signle_price = trading_state.base_grid_single_price
 
                 # 补单
                 async with replenish_grid_lock:

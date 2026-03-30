@@ -24,6 +24,7 @@ pip install -r requirements.txt
 - `NADO_SYMBOL=AAVEUSDT0`
 - `NADO_ISOLATED=false`（可选：逐仓下单开关；若该合约是 isolated-only 且报 `error_code=2122`，设为 true）
 - `NADO_ISOLATED_MARGIN_USDC=0`（可选：isolated 下单附带初始保证金，写入 appendix 高位；如 1000 表示 1000 USDC）
+- `RISK_ENABLED=true`（可选：是否启用风控；设为 `false` 时跳过 Binance K线风控与相关参数依赖）
 - `RISK_BINANCE_SYMBOL=AAVEUSDT`
 - `RISK_BINANCE_MARKET=spot`（可选：`spot` 现货 / `futures` 合约，默认 spot）
 - `RISK_KLINE_COUNT=100`
@@ -48,4 +49,5 @@ python grid.py
 
 - 程序支持 Nado 永续合约（`nado_perp`）与现货（`nado_spot`），通过 `EXCHANGE_TYPE` 二选一。
 - 默认交易标的是 `AAVEUSDT0`（建议显式设置 `NADO_PRODUCT_ID=26`）。
-- 风控 K 线数据源由 `RISK_BINANCE_SYMBOL` 配置决定（例如 `AAVEUSDT`），市场（现货/合约）由 `RISK_BINANCE_MARKET` 决定。
+- 当 `RISK_ENABLED=true` 时，风控 K 线数据源由 `RISK_BINANCE_SYMBOL` 配置决定（例如 `AAVEUSDT`），市场（现货/合约）由 `RISK_BINANCE_MARKET` 决定。
+- 当 `RISK_ENABLED=false` 时，程序跳过 Binance K 线风控、ATR 动态步长和趋势过滤，可用于 Binance 无对应交易对的标的（如 WTI）。

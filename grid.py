@@ -23,10 +23,19 @@ def _get_required_env(key: str) -> str:
     return str(value).strip()
 
 
+def _get_bool_env(key: str, default: bool = False) -> bool:
+    value = os.getenv(key)
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def load_grid_configs() -> Dict[str, Dict[str, Any]]:
     """
     Load grid configurations from environment variables
     """
+    risk_enabled = _get_bool_env("RISK_ENABLED", True)
+
     # Load common grid configuration
     common_config = {
         "DIRECTION": _get_required_env("DIRECTION"),  # 交易方向
@@ -37,21 +46,22 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "MAX_POSITION": float(_get_required_env("MAX_POSITION")),  # 最大仓位限制
         "ALER_POSITION": float(_get_required_env("ALER_POSITION")),  # 警告仓位限制
         "MARKET_ID": int(_get_required_env("MARKET_ID")),  # 市场ID
-        "RISK_BINANCE_SYMBOL": _get_required_env("RISK_BINANCE_SYMBOL"),  # 风控K线Binance交易对（如 AAVEUSDT）
+        "RISK_ENABLED": risk_enabled,  # 是否启用K线风控
+        "RISK_BINANCE_SYMBOL": (_get_required_env("RISK_BINANCE_SYMBOL") if risk_enabled else os.getenv("RISK_BINANCE_SYMBOL", "")).strip(),  # 风控K线Binance交易对（如 AAVEUSDT）
         "RISK_BINANCE_MARKET": os.getenv("RISK_BINANCE_MARKET", "spot").strip().lower(),  # 风控K线Binance市场：spot|futures
-        "RISK_KLINE_COUNT": int(_get_required_env("RISK_KLINE_COUNT")),  # 风控K线每次拉取根数（1m/15m共用）
-        "ATR_THRESHOLD": float(_get_required_env("ATR_THRESHOLD")),  # ATR波动阈值
-        "RAPID_MOVE_THRESHOLD_PCT": float(_get_required_env("RAPID_MOVE_THRESHOLD_PCT")),  # 急跌/急涨阈值（百分比）
-        "RAPID_MOVE_ATR_PERIOD": int(_get_required_env("RAPID_MOVE_ATR_PERIOD")),  # 急跌/急涨ATR周期
-        "RAPID_MOVE_SOURCE_MAX_DIFF_PCT": float(_get_required_env("RAPID_MOVE_SOURCE_MAX_DIFF_PCT")),  # 实时价与K线收盘价最大允许偏差
-        "ADVERSE_EMA_PERIOD": int(_get_required_env("ADVERSE_EMA_PERIOD")),  # 不利趋势EMA周期
-        "ADVERSE_RSI_PERIOD": int(_get_required_env("ADVERSE_RSI_PERIOD")),  # 不利趋势RSI周期
-        "ADVERSE_ADX_PERIOD": int(_get_required_env("ADVERSE_ADX_PERIOD")),  # 不利趋势ADX周期
-        "ADVERSE_ADX_THRESHOLD": float(_get_required_env("ADVERSE_ADX_THRESHOLD")),  # 不利趋势ADX阈值
-        "ADVERSE_RSI_LONG_THRESHOLD": float(_get_required_env("ADVERSE_RSI_LONG_THRESHOLD")),  # LONG不利趋势RSI阈值
-        "ADVERSE_RSI_SHORT_THRESHOLD": float(_get_required_env("ADVERSE_RSI_SHORT_THRESHOLD")),  # SHORT不利趋势RSI阈值
-        "EMA_REVERSION_PERIOD": int(_get_required_env("EMA_REVERSION_PERIOD")),  # EMA均值回归周期
-        "EMA_REVERSION_THRESHOLD": float(_get_required_env("EMA_REVERSION_THRESHOLD")),  # EMA均值回归偏离阈值
+        "RISK_KLINE_COUNT": int(_get_required_env("RISK_KLINE_COUNT") if risk_enabled else os.getenv("RISK_KLINE_COUNT", "100")),  # 风控K线每次拉取根数（1m/15m共用）
+        "ATR_THRESHOLD": float(_get_required_env("ATR_THRESHOLD") if risk_enabled else os.getenv("ATR_THRESHOLD", "0")),  # ATR波动阈值
+        "RAPID_MOVE_THRESHOLD_PCT": float(_get_required_env("RAPID_MOVE_THRESHOLD_PCT") if risk_enabled else os.getenv("RAPID_MOVE_THRESHOLD_PCT", "0")),  # 急跌/急涨阈值（百分比）
+        "RAPID_MOVE_ATR_PERIOD": int(_get_required_env("RAPID_MOVE_ATR_PERIOD") if risk_enabled else os.getenv("RAPID_MOVE_ATR_PERIOD", "7")),  # 急跌/急涨ATR周期
+        "RAPID_MOVE_SOURCE_MAX_DIFF_PCT": float(_get_required_env("RAPID_MOVE_SOURCE_MAX_DIFF_PCT") if risk_enabled else os.getenv("RAPID_MOVE_SOURCE_MAX_DIFF_PCT", "0.2")),  # 实时价与K线收盘价最大允许偏差
+        "ADVERSE_EMA_PERIOD": int(_get_required_env("ADVERSE_EMA_PERIOD") if risk_enabled else os.getenv("ADVERSE_EMA_PERIOD", "20")),  # 不利趋势EMA周期
+        "ADVERSE_RSI_PERIOD": int(_get_required_env("ADVERSE_RSI_PERIOD") if risk_enabled else os.getenv("ADVERSE_RSI_PERIOD", "14")),  # 不利趋势RSI周期
+        "ADVERSE_ADX_PERIOD": int(_get_required_env("ADVERSE_ADX_PERIOD") if risk_enabled else os.getenv("ADVERSE_ADX_PERIOD", "14")),  # 不利趋势ADX周期
+        "ADVERSE_ADX_THRESHOLD": float(_get_required_env("ADVERSE_ADX_THRESHOLD") if risk_enabled else os.getenv("ADVERSE_ADX_THRESHOLD", "25")),  # 不利趋势ADX阈值
+        "ADVERSE_RSI_LONG_THRESHOLD": float(_get_required_env("ADVERSE_RSI_LONG_THRESHOLD") if risk_enabled else os.getenv("ADVERSE_RSI_LONG_THRESHOLD", "50")),  # LONG不利趋势RSI阈值
+        "ADVERSE_RSI_SHORT_THRESHOLD": float(_get_required_env("ADVERSE_RSI_SHORT_THRESHOLD") if risk_enabled else os.getenv("ADVERSE_RSI_SHORT_THRESHOLD", "50")),  # SHORT不利趋势RSI阈值
+        "EMA_REVERSION_PERIOD": int(_get_required_env("EMA_REVERSION_PERIOD") if risk_enabled else os.getenv("EMA_REVERSION_PERIOD", "60")),  # EMA均值回归周期
+        "EMA_REVERSION_THRESHOLD": float(_get_required_env("EMA_REVERSION_THRESHOLD") if risk_enabled else os.getenv("EMA_REVERSION_THRESHOLD", "0.04")),  # EMA均值回归偏离阈值
         "OVER_RANGE_GAP_MULTIPLIER": float(os.getenv("OVER_RANGE_GAP_MULTIPLIER", "2.5")),  # 大间距补单：开平仓间距超过该倍数步长时触发；无卖单时用于开仓价与当前价间距
         "PRICE_PRECISION": float(os.getenv("PRICE_PRECISION", "0.1")),  # 价格精度（最小变动单位），如 0.1=ETH、0.01=部分币种，用于下单前舍入以适配不同交易所/币种
         # REST 对账（兜底）：WS 主驱动，REST 仅低频校准，避免 WS 漏消息导致本地状态漂移
