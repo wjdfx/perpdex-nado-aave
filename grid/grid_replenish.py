@@ -56,10 +56,10 @@ def _announce_open_order_price_guard_state() -> bool:
     blocked, reason = _get_open_order_price_guard_status()
     if blocked != trading_state.open_order_price_guard_blocked:
         if blocked:
-            logger.info("价格保护触发：暂停开仓单，%s", reason)
+            logger.info("价格保护触发（基于 Nado mark_price）：暂停开仓单，%s", reason)
         else:
             logger.info(
-                "价格保护恢复：当前价=%s，恢复开仓单",
+                "价格保护恢复（基于 Nado mark_price）：当前价=%s，恢复开仓单",
                 format_price_for_display(float(trading_state.current_price or 0.0)),
             )
         trading_state.open_order_price_guard_blocked = blocked

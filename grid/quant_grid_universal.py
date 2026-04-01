@@ -241,7 +241,7 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         else:
             if not trading_state.grid_pause:
                 if _announce_open_order_price_guard_state():
-                    logger.info("初始化跳过开仓单：当前价格处于开单保护区间外，等待价格回到允许区间")
+                    logger.info("初始化跳过开仓单：当前 Nado mark_price 处于开单保护区间外，等待价格回到允许区间")
                 else:
                     place_spread = grid_spread
                     if trading_state.grid_open_spread_alert:
