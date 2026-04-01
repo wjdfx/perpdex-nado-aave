@@ -30,11 +30,44 @@ def _get_bool_env(key: str, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _get_optional_float_env(key: str) -> float | None:
+    value = os.getenv(key)
+    if value is None or str(value).strip() == "":
+        return None
+    return float(str(value).strip())
+
+
 def load_grid_configs() -> Dict[str, Dict[str, Any]]:
     """
     Load grid configurations from environment variables
     """
     risk_enabled = _get_bool_env("RISK_ENABLED", True)
+    open_order_price_guard_enabled = _get_bool_env(
+        "OPEN_ORDER_PRICE_GUARD_ENABLED", False
+    )
+    open_order_price_guard_min = _get_optional_float_env(
+        "OPEN_ORDER_PRICE_GUARD_MIN_PRICE"
+    )
+    open_order_price_guard_max = _get_optional_float_env(
+        "OPEN_ORDER_PRICE_GUARD_MAX_PRICE"
+    )
+
+    if open_order_price_guard_enabled:
+        if (
+            open_order_price_guard_min is None
+            and open_order_price_guard_max is None
+        ):
+            raise ValueError(
+                "OPEN_ORDER_PRICE_GUARD_ENABLED=true 时，至少需要设置 OPEN_ORDER_PRICE_GUARD_MIN_PRICE 或 OPEN_ORDER_PRICE_GUARD_MAX_PRICE"
+            )
+        if (
+            open_order_price_guard_min is not None
+            and open_order_price_guard_max is not None
+            and open_order_price_guard_min >= open_order_price_guard_max
+        ):
+            raise ValueError(
+                "OPEN_ORDER_PRICE_GUARD_MIN_PRICE 必须小于 OPEN_ORDER_PRICE_GUARD_MAX_PRICE"
+            )
 
     # Load common grid configuration
     common_config = {
@@ -47,6 +80,9 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "ALER_POSITION": float(_get_required_env("ALER_POSITION")),  # 警告仓位限制
         "MARKET_ID": int(_get_required_env("MARKET_ID")),  # 市场ID
         "RISK_ENABLED": risk_enabled,  # 是否启用K线风控
+        "OPEN_ORDER_PRICE_GUARD_ENABLED": open_order_price_guard_enabled,  # 是否启用价格区间外暂停开单
+        "OPEN_ORDER_PRICE_GUARD_MIN_PRICE": open_order_price_guard_min,  # 当前价<=该值时暂停开单
+        "OPEN_ORDER_PRICE_GUARD_MAX_PRICE": open_order_price_guard_max,  # 当前价>=该值时暂停开单
         "RISK_BINANCE_SYMBOL": (_get_required_env("RISK_BINANCE_SYMBOL") if risk_enabled else os.getenv("RISK_BINANCE_SYMBOL", "")).strip(),  # 风控K线Binance交易对（如 AAVEUSDT）
         "RISK_BINANCE_MARKET": os.getenv("RISK_BINANCE_MARKET", "spot").strip().lower(),  # 风控K线Binance市场：spot|futures
         "RISK_KLINE_COUNT": int(_get_required_env("RISK_KLINE_COUNT") if risk_enabled else os.getenv("RISK_KLINE_COUNT", "100")),  # 风控K线每次拉取根数（1m/15m共用）

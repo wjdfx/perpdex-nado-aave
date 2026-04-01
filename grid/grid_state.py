@@ -63,6 +63,7 @@ class GridTradingState:
         self.filled_count: int = 0  # 成交订单计数
         self.candle_stick_1m: pd.DataFrame = None  # 1分钟K线数据
         self.current_atr: float = 0.0  # 当前ATR值
+        self.open_order_price_guard_blocked: bool = False  # 价格阈值是否正在阻止开仓单
         
         self.pause_positions: dict[float, float] = {}  # 熔断时的仓位映射, 价格->仓位
         self.pause_orders: dict[str, dict[str, float]] = {}  # 占位订单ID到价格与数量的映射

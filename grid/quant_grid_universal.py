@@ -86,6 +86,7 @@ from .grid_risk import (
 from .grid_replenish import (
     replenish_grid,
     calculate_grid_prices,
+    _announce_open_order_price_guard_state,
 )
 
 
@@ -239,19 +240,22 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
             logger.info("当前账户已有未结订单，跳过初始化")
         else:
             if not trading_state.grid_pause:
-                place_spread = grid_spread
-                if trading_state.grid_open_spread_alert:
-                    place_spread *= 2
+                if _announce_open_order_price_guard_state():
+                    logger.info("初始化跳过开仓单：当前价格处于开单保护区间外，等待价格回到允许区间")
+                else:
+                    place_spread = grid_spread
+                    if trading_state.grid_open_spread_alert:
+                        place_spread *= 2
 
-                # 使用 GridTrading.place_grid_orders 辅助函数
-                # side: 1=Long, -1=Short
-                side_param = 1 if not OPEN_SIDE_IS_ASK else -1
-                success = await grid_trading.place_grid_orders(
-                    side_param, base_price, grid_count, grid_amount, place_spread
-                )
-                # 下单成功后必须再次同步订单状态，否则 replenish_grid 后续的大间距/配置补单会认为订单数为 0 而重复下单（风控恢复后尤其明显）
-                if success:
-                    await _sync_current_orders()
+                    # 使用 GridTrading.place_grid_orders 辅助函数
+                    # side: 1=Long, -1=Short
+                    side_param = 1 if not OPEN_SIDE_IS_ASK else -1
+                    success = await grid_trading.place_grid_orders(
+                        side_param, base_price, grid_count, grid_amount, place_spread
+                    )
+                    # 下单成功后必须再次同步订单状态，否则 replenish_grid 后续的大间距/配置补单会认为订单数为 0 而重复下单（风控恢复后尤其明显）
+                    if success:
+                        await _sync_current_orders()
 
         if success:
             # 初始化价格列表
@@ -481,6 +485,7 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                 log_grid_step = format_price_for_display(trading_state.active_grid_signle_price or 0)
                 log_open_price = format_price_for_display(trading_state.open_price or 0)
                 log_current_price = format_price_for_display(trading_state.current_price or 0)
+                _announce_open_order_price_guard_state()
                 logger.info(
                     f"\n"
                     f"════════════════════ 策略运行报告 ════════════════════\n"

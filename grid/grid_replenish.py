@@ -15,6 +15,57 @@ from .grid_state import format_price_for_display, round_price_to_precision
 logger = logging.getLogger(__name__)
 
 
+def _get_open_order_price_guard_status() -> Tuple[bool, str]:
+    """
+    返回当前价格是否应暂停开仓单。
+    仅影响开仓侧下单，程序与平仓逻辑继续运行。
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG or {}
+
+    if not bool(GRID_CONFIG.get("OPEN_ORDER_PRICE_GUARD_ENABLED", False)):
+        return False, ""
+
+    current_price = float(trading_state.current_price or 0.0)
+    if current_price <= 0:
+        return False, ""
+
+    min_price = GRID_CONFIG.get("OPEN_ORDER_PRICE_GUARD_MIN_PRICE")
+    max_price = GRID_CONFIG.get("OPEN_ORDER_PRICE_GUARD_MAX_PRICE")
+
+    if min_price is not None and current_price <= float(min_price):
+        return (
+            True,
+            f"当前价={format_price_for_display(current_price)} <= 下限={format_price_for_display(float(min_price))}",
+        )
+
+    if max_price is not None and current_price >= float(max_price):
+        return (
+            True,
+            f"当前价={format_price_for_display(current_price)} >= 上限={format_price_for_display(float(max_price))}",
+        )
+
+    return False, ""
+
+
+def _announce_open_order_price_guard_state() -> bool:
+    """
+    价格阈值开关状态变化时打印一次日志，避免每轮重复刷屏。
+    """
+    trading_state = grid_state.trading_state
+    blocked, reason = _get_open_order_price_guard_status()
+    if blocked != trading_state.open_order_price_guard_blocked:
+        if blocked:
+            logger.info("价格保护触发：暂停开仓单，%s", reason)
+        else:
+            logger.info(
+                "价格保护恢复：当前价=%s，恢复开仓单",
+                format_price_for_display(float(trading_state.current_price or 0.0)),
+            )
+        trading_state.open_order_price_guard_blocked = blocked
+    return blocked
+
+
 def _stage1_paired_close_target_price(fill_price: float, open_side_is_ask: bool, step: float) -> float:
     """
     与 _place_paired_close_order_with_retry 的 stage「1x」首档目标价一致（calc_target_price(1)）。
@@ -105,6 +156,7 @@ async def replenish_grid(
         source: 触发来源，用于日志区分 "WS"（WebSocket 成交）或 "REST"（对账/消失单）
     """
     trading_state = grid_state.trading_state
+    _announce_open_order_price_guard_state()
     if filled_signal:
         trading_state._replenish_source = source
 
@@ -167,6 +219,7 @@ async def _on_open_side_filled(trade_price: float = 0.0):
     # 1. 补充开仓单 (继续建仓)
     if (
         not trading_state.grid_pause
+        and not _announce_open_order_price_guard_state()
         and trading_state.open_orders_count < GRID_CONFIG["GRID_COUNT"]
     ):
         new_open_order = await _calc_next_open_side_open_order()
@@ -619,7 +672,7 @@ async def _on_close_side_filled(trade_price: float = 0.0):
 
     # 1. 补充开仓单 (Buy Back)
     # 若计算出的开仓价等于刚成交的平仓价，则跳过，避免同价买卖 round-trip 浪费手续费
-    if not trading_state.grid_pause:
+    if not trading_state.grid_pause and not _announce_open_order_price_guard_state():
         new_open_order = await _calc_next_close_side_open_order()
         if new_open_order:
             _is_ask, new_open_price, _ = new_open_order
@@ -885,6 +938,9 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
     trading_state = grid_state.trading_state
     GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+
+    if _announce_open_order_price_guard_state():
+        return
     
     if trading_state.open_orders_count >= GRID_CONFIG["MAX_TOTAL_ORDERS"]:
         logger.debug("大间距开仓补单: 跳过, 开仓单数=%s >= MAX_TOTAL_ORDERS=%s", trading_state.open_orders_count, GRID_CONFIG["MAX_TOTAL_ORDERS"])
@@ -934,6 +990,9 @@ async def _over_range_trailing_open_order():
     trading_state = grid_state.trading_state
     GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+
+    if _announce_open_order_price_guard_state():
+        return
 
     if not trading_state.current_price or trading_state.open_orders_count == 0:
         return
@@ -1103,6 +1162,9 @@ async def _replenish_config_open_orders():
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     
     if trading_state.grid_pause:
+        return
+
+    if _announce_open_order_price_guard_state():
         return
     
     while (
