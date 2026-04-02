@@ -87,6 +87,7 @@ from .grid_replenish import (
     replenish_grid,
     calculate_grid_prices,
     _announce_open_order_price_guard_state,
+    handle_open_order_price_guard_action,
 )
 
 
@@ -233,6 +234,9 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
 
         # 同步订单状态
         await _sync_current_orders()
+        if await handle_open_order_price_guard_action():
+            logger.info("初始化同步订单后触发价格保护停机，跳过初始化")
+            return True
 
         success = True
         if trading_state.open_orders_count > 0 or trading_state.close_orders_count > 0:
@@ -240,6 +244,9 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
             logger.info("当前账户已有未结订单，跳过初始化")
         else:
             if not trading_state.grid_pause:
+                if await handle_open_order_price_guard_action():
+                    logger.info("初始化阶段触发价格保护停机，跳过初始化下单")
+                    return True
                 if _announce_open_order_price_guard_state():
                     logger.info("初始化跳过开仓单：当前 Nado mark_price 处于开单保护区间外，等待价格回到允许区间")
                 else:
@@ -405,6 +412,9 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
 
     try:
         await asyncio.sleep(2)
+        if await handle_open_order_price_guard_action():
+            logger.info("启动阶段触发价格保护停机，准备退出")
+            return
         if risk_enabled:
             await _risk_check(start=True)
         else:
@@ -485,6 +495,9 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
                 log_grid_step = format_price_for_display(trading_state.active_grid_signle_price or 0)
                 log_open_price = format_price_for_display(trading_state.open_price or 0)
                 log_current_price = format_price_for_display(trading_state.current_price or 0)
+                if await handle_open_order_price_guard_action():
+                    logger.info("运行中触发价格保护停机，结束主循环")
+                    break
                 _announce_open_order_price_guard_state()
                 logger.info(
                     f"\n"
@@ -573,6 +586,8 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
     finally:
         trading_state.is_running = False
         await exchange.close()
+        if trading_state.stop_reason:
+            logger.info("停止原因: %s", trading_state.stop_reason)
         logger.info("🔚 网格交易系统已停止")
 
 

@@ -45,6 +45,9 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
     open_order_price_guard_enabled = _get_bool_env(
         "OPEN_ORDER_PRICE_GUARD_ENABLED", False
     )
+    open_order_price_guard_action = (
+        os.getenv("OPEN_ORDER_PRICE_GUARD_ACTION", "pause_open_orders").strip().lower()
+    )
     open_order_price_guard_min = _get_optional_float_env(
         "OPEN_ORDER_PRICE_GUARD_MIN_PRICE"
     )
@@ -53,6 +56,13 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
     )
 
     if open_order_price_guard_enabled:
+        if open_order_price_guard_action not in {
+            "pause_open_orders",
+            "cancel_orders_and_stop",
+        }:
+            raise ValueError(
+                "OPEN_ORDER_PRICE_GUARD_ACTION 仅支持 pause_open_orders 或 cancel_orders_and_stop"
+            )
         if (
             open_order_price_guard_min is None
             and open_order_price_guard_max is None
@@ -81,6 +91,7 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         "MARKET_ID": int(_get_required_env("MARKET_ID")),  # 市场ID
         "RISK_ENABLED": risk_enabled,  # 是否启用K线风控
         "OPEN_ORDER_PRICE_GUARD_ENABLED": open_order_price_guard_enabled,  # 是否启用价格区间外暂停开单
+        "OPEN_ORDER_PRICE_GUARD_ACTION": open_order_price_guard_action,  # 价格保护触发后动作：暂停开仓或撤单停机
         "OPEN_ORDER_PRICE_GUARD_MIN_PRICE": open_order_price_guard_min,  # 当前价<=该值时暂停开单
         "OPEN_ORDER_PRICE_GUARD_MAX_PRICE": open_order_price_guard_max,  # 当前价>=该值时暂停开单
         "RISK_BINANCE_SYMBOL": (_get_required_env("RISK_BINANCE_SYMBOL") if risk_enabled else os.getenv("RISK_BINANCE_SYMBOL", "")).strip(),  # 风控K线Binance交易对（如 AAVEUSDT）

@@ -26,6 +26,7 @@ pip install -r requirements.txt
 - `NADO_ISOLATED_MARGIN_USDC=0`（可选：isolated 下单附带初始保证金，写入 appendix 高位；如 1000 表示 1000 USDC）
 - `RISK_ENABLED=true`（可选：是否启用风控；设为 `false` 时跳过 Binance K线风控与相关参数依赖）
 - `OPEN_ORDER_PRICE_GUARD_ENABLED=false`（可选：是否启用价格阈值暂停开仓）
+- `OPEN_ORDER_PRICE_GUARD_ACTION=pause_open_orders`（可选：价格触发后只暂停开仓，或撤单并停机）
 - `OPEN_ORDER_PRICE_GUARD_MIN_PRICE=`（可选：当前价 `<=` 该值时暂停开仓；留空表示不设下限）
 - `OPEN_ORDER_PRICE_GUARD_MAX_PRICE=`（可选：当前价 `>=` 该值时暂停开仓；留空表示不设上限）
 - `RISK_BINANCE_SYMBOL=AAVEUSDT`
@@ -54,4 +55,5 @@ python grid.py
 - 默认交易标的是 `AAVEUSDT0`（建议显式设置 `NADO_PRODUCT_ID=26`）。
 - 当 `RISK_ENABLED=true` 时，风控 K 线数据源由 `RISK_BINANCE_SYMBOL` 配置决定（例如 `AAVEUSDT`），市场（现货/合约）由 `RISK_BINANCE_MARKET` 决定。
 - 当 `RISK_ENABLED=false` 时，程序跳过 Binance K 线风控、ATR 动态步长和趋势过滤，可用于 Binance 无对应交易对的标的（如 WTI）。
-- 当 `OPEN_ORDER_PRICE_GUARD_ENABLED=true` 时，若当前价超出你配置的上下限，程序只暂停“开仓单”下发；平仓单、成交处理、日志和主循环继续运行。价格回到允许区间后，会自动恢复开仓。
+- 当 `OPEN_ORDER_PRICE_GUARD_ENABLED=true` 且 `OPEN_ORDER_PRICE_GUARD_ACTION=pause_open_orders` 时，若当前价超出你配置的上下限，程序只暂停“开仓单”下发；平仓单、成交处理、日志和主循环继续运行。价格回到允许区间后，会自动恢复开仓。
+- 当 `OPEN_ORDER_PRICE_GUARD_ENABLED=true` 且 `OPEN_ORDER_PRICE_GUARD_ACTION=cancel_orders_and_stop` 时，若当前价超出你配置的上下限，程序会先撤销当前活跃挂单，再优雅退出程序；后续需要手动重启。

@@ -15,37 +15,44 @@ from .grid_state import format_price_for_display, round_price_to_precision
 logger = logging.getLogger(__name__)
 
 
-def _get_open_order_price_guard_status() -> Tuple[bool, str]:
+def _get_open_order_price_guard_status() -> Tuple[bool, str, str]:
     """
-    返回当前价格是否应暂停开仓单。
-    仅影响开仓侧下单，程序与平仓逻辑继续运行。
+    返回当前价格保护状态。
+    (是否触发, 原因, 动作)
     """
     trading_state = grid_state.trading_state
     GRID_CONFIG = grid_state.GRID_CONFIG or {}
 
     if not bool(GRID_CONFIG.get("OPEN_ORDER_PRICE_GUARD_ENABLED", False)):
-        return False, ""
+        return False, "", "pause_open_orders"
 
     current_price = float(trading_state.current_price or 0.0)
     if current_price <= 0:
-        return False, ""
+        return False, "", str(
+            GRID_CONFIG.get("OPEN_ORDER_PRICE_GUARD_ACTION", "pause_open_orders")
+        )
 
     min_price = GRID_CONFIG.get("OPEN_ORDER_PRICE_GUARD_MIN_PRICE")
     max_price = GRID_CONFIG.get("OPEN_ORDER_PRICE_GUARD_MAX_PRICE")
+    action = str(
+        GRID_CONFIG.get("OPEN_ORDER_PRICE_GUARD_ACTION", "pause_open_orders")
+    )
 
     if min_price is not None and current_price <= float(min_price):
         return (
             True,
             f"当前价={format_price_for_display(current_price)} <= 下限={format_price_for_display(float(min_price))}",
+            action,
         )
 
     if max_price is not None and current_price >= float(max_price):
         return (
             True,
             f"当前价={format_price_for_display(current_price)} >= 上限={format_price_for_display(float(max_price))}",
+            action,
         )
 
-    return False, ""
+    return False, "", action
 
 
 def _announce_open_order_price_guard_state() -> bool:
@@ -53,10 +60,19 @@ def _announce_open_order_price_guard_state() -> bool:
     价格阈值开关状态变化时打印一次日志，避免每轮重复刷屏。
     """
     trading_state = grid_state.trading_state
-    blocked, reason = _get_open_order_price_guard_status()
+    blocked, reason, action = _get_open_order_price_guard_status()
+    action_text = (
+        "撤销当前挂单并停机"
+        if action == "cancel_orders_and_stop"
+        else "暂停开仓单"
+    )
     if blocked != trading_state.open_order_price_guard_blocked:
         if blocked:
-            logger.info("价格保护触发（基于 Nado mark_price）：暂停开仓单，%s", reason)
+            logger.info(
+                "价格保护触发（基于 Nado mark_price）：%s，%s",
+                action_text,
+                reason,
+            )
         else:
             logger.info(
                 "价格保护恢复（基于 Nado mark_price）：当前价=%s，恢复开仓单",
@@ -64,6 +80,45 @@ def _announce_open_order_price_guard_state() -> bool:
             )
         trading_state.open_order_price_guard_blocked = blocked
     return blocked
+
+
+async def handle_open_order_price_guard_action() -> bool:
+    """
+    执行价格保护动作。
+    返回 True 表示本轮已触发停机，调用方应尽快结束后续逻辑。
+    """
+    trading_state = grid_state.trading_state
+    blocked, reason, action = _get_open_order_price_guard_status()
+
+    if not blocked or action != "cancel_orders_and_stop":
+        return False
+
+    if trading_state.open_order_price_guard_stop_triggered:
+        return True
+
+    trading_state.open_order_price_guard_stop_triggered = True
+    trading_state.open_order_price_guard_blocked = True
+    trading_state.stop_reason = f"价格保护触发（基于 Nado mark_price）：{reason}"
+    logger.warning(
+        "%s，执行撤单并停机",
+        trading_state.stop_reason,
+    )
+
+    active_order_ids = list(trading_state.buy_orders.keys()) + list(
+        trading_state.sell_orders.keys()
+    )
+    if active_order_ids:
+        try:
+            from .grid_order import _cancel_orders
+
+            await _cancel_orders(active_order_ids)
+        except Exception:
+            logger.exception("价格保护停机前撤单失败，继续执行停机")
+    else:
+        logger.info("价格保护停机：当前无活跃挂单，直接停机")
+
+    trading_state.is_running = False
+    return True
 
 
 def _stage1_paired_close_target_price(fill_price: float, open_side_is_ask: bool, step: float) -> float:
