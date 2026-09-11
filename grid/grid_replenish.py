@@ -246,6 +246,9 @@ async def replenish_grid(
         if trading_state.available_position_size > 0:
             await _replenish_config_close_orders()
 
+        # 平仓单对账兜底：放在最后，捕捉上面所有路径遗漏的缺口
+        await _reconcile_close_orders()
+
     except Exception:
         logger.exception(f"补充网格订单时发生错误")
 
@@ -385,9 +388,11 @@ async def _place_paired_close_order_with_retry(
     开仓成交后的配对平仓单重试状态机（1x -> 2x -> 3x）。
     - 全程 post-only + reduce_only
     - 1x失败后升2x，2x失败后升3x
-    - 3x阶段持续重试直到成功（日志节流）
+    - 3x阶段重试有限次（PAIRED_CLOSE_STAGE3_MAX_RETRY），耗尽后返回失败，
+      由 _reconcile_close_orders() 的仓位对账兜底补齐，避免在此处无限循环持锁。
     """
     trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG or {}
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
 
     step = float(trading_state.base_grid_single_price or 0.0)
@@ -397,10 +402,13 @@ async def _place_paired_close_order_with_retry(
         logger.error("配对平仓单重试失败：step无效，无法计算目标价格")
         return False, "", float(fill_price)
 
+    stage3_max_retry = int(GRID_CONFIG.get("PAIRED_CLOSE_STAGE3_MAX_RETRY", 30) or 30)
+    if stage3_max_retry <= 0:
+        stage3_max_retry = 1
     stages = [
         ("1x", 1, 3),
         ("2x", 2, 5),
-        ("3x", 3, None),  # 持续重试
+        ("3x", 3, stage3_max_retry),  # 有限重试，耗尽后交给仓位对账
     ]
     stage_index = 0
     last_error = "unknown"
@@ -508,12 +516,15 @@ async def _place_paired_close_order_with_retry(
                 last_error,
             )
 
-            if stage_retry_limit is None:
+            if stage_index >= 2:
+                # 3x 阶段：固定间隔重试 + 日志节流，避免退避时间指数膨胀
                 now = time.time()
                 if now - last_log_time >= stage3_log_interval_sec:
                     logger.warning(
-                        "配对平仓仍未成功，持续重试中: stage=%s, fill=%s, target=%s",
+                        "配对平仓仍未成功，重试中: stage=%s, attempt=%s/%s, fill=%s, target=%s",
                         stage_name,
+                        attempt,
+                        stage_retry_limit,
                         round(float(fill_price), 6),
                         target_price,
                     )
@@ -535,7 +546,14 @@ async def _place_paired_close_order_with_retry(
                 format_price_for_display(step),
             )
         else:
-            # 理论上不会到这里（3x为无限重试），防御性返回
+            logger.error(
+                "配对平仓重试耗尽: stage=%s, 共%s次, fill=%s, target=%s，"
+                "本次放弃，缺口将由平仓单对账补齐",
+                stage_name,
+                stage_retry_limit,
+                format_price_for_display(float(fill_price)),
+                format_price_for_display(target_price),
+            )
             break
 
     return False, "", calc_target_price(3)
@@ -864,6 +882,119 @@ async def _calc_next_close_side_close_order() -> Optional[Tuple[bool, float, flo
     return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
 
 
+async def _reconcile_close_orders():
+    """
+    平仓单对账（幂等兜底，与成交事件无关）。
+
+    比对「可用仓位应有的平仓单格数」与「实际挂着的平仓单数」，发现缺口就补齐。
+    不关心缺口成因——WS 丢帧、配对重试耗尽、下单被拒、程序重启，任何原因都能收敛。
+    每轮最多补 CLOSE_ORDER_RECONCILE_MAX_PER_ROUND 张，避免突发补单打满限频。
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG or {}
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
+
+    if not bool(GRID_CONFIG.get("CLOSE_ORDER_RECONCILE_ENABLED", True)):
+        return
+
+    grid_amount = float(GRID_CONFIG.get("GRID_AMOUNT", 0) or 0)
+    if grid_amount <= 0:
+        return
+
+    current_price = float(trading_state.current_price or 0.0)
+    if current_price <= 0:
+        return
+
+    step = float(
+        trading_state.active_grid_signle_price
+        or trading_state.base_grid_single_price
+        or 0.0
+    )
+    if step <= 0:
+        return
+
+    available = float(trading_state.available_position_size or 0.0)
+    expected = int((available + 1e-9) / grid_amount)
+    actual = trading_state.close_orders_count
+    missing = expected - actual
+    if missing < 1:
+        return
+
+    max_total = int(GRID_CONFIG.get("MAX_TOTAL_ORDERS", 0) or 0)
+    if max_total > 0:
+        missing = min(missing, max(0, max_total - actual))
+    per_round = int(GRID_CONFIG.get("CLOSE_ORDER_RECONCILE_MAX_PER_ROUND", 3) or 3)
+    missing = min(missing, max(1, per_round))
+    if missing < 1:
+        return
+
+    logger.warning(
+        "平仓单对账发现缺口: 可用仓位=%s, 应有平仓单=%s格, 实际=%s张, 本轮补=%s张",
+        round(available, 6),
+        expected,
+        actual,
+        missing,
+    )
+
+    # 已占用价位（含在途配对平仓单的目标价），用 0.5*step 容差去重
+    occupied = [float(p) for p in trading_state.close_orders.values()]
+    if trading_state.paired_close_retry_block_until > time.time():
+        paired_target = float(trading_state.paired_close_target_price or 0.0)
+        if paired_target > 0:
+            occupied.append(paired_target)
+
+    def _is_free(price: float) -> bool:
+        return not any(abs(price - p) <= step * 0.5 for p in occupied)
+
+    placed = 0
+    # 从市价外侧第一档起逐档向外找空位（做多向上、做空向下）
+    direction = 1 if not OPEN_SIDE_IS_ASK else -1
+    for k in range(1, 60):
+        if placed >= missing:
+            break
+        candidate = round_price_to_precision(current_price + step * k * direction)
+        if candidate <= 0:
+            break
+        # 平仓单必须在市价的正确一侧
+        if not OPEN_SIDE_IS_ASK and candidate <= current_price:
+            continue
+        if OPEN_SIDE_IS_ASK and candidate >= current_price:
+            continue
+        if not _is_free(candidate):
+            continue
+
+        success, order_id, err, _ = await trading_state.grid_trading.place_single_order(
+            is_ask=CLOSE_SIDE_IS_ASK,
+            price=candidate,
+            amount=grid_amount,
+            reduce_only=True,
+        )
+        if success:
+            if order_id:
+                if CLOSE_SIDE_IS_ASK:
+                    trading_state.sell_orders[order_id] = candidate
+                else:
+                    trading_state.buy_orders[order_id] = candidate
+            occupied.append(candidate)
+            placed += 1
+            logger.info(
+                "平仓单对账补单成功: ID=%s, 价格=%s",
+                order_id,
+                format_price_for_display(candidate),
+            )
+        else:
+            logger.error(
+                "平仓单对账补单失败: 价格=%s, error=%s，停止本轮对账",
+                format_price_for_display(candidate),
+                err,
+            )
+            break
+
+    if placed:
+        logger.info("平仓单对账本轮补齐 %s 张", placed)
+
+
 async def _over_range_replenish_order():
     """
     大间距补单逻辑
@@ -903,8 +1034,18 @@ async def _over_range_replenish_order():
             trading_state.active_grid_signle_price * 2 * multiplier
         )
 
-    # 无卖单时追单：开仓单离当前价过远，取消最远单并在靠近当前价处补单（使用 OVER_RANGE_GAP_MULTIPLIER）
-    if trading_state.close_orders_count == 0 and trading_state.open_orders_count > 0:
+    # 追价：开仓单离当前价过远时，取消最远单并在靠近当前价处补单（使用 OVER_RANGE_GAP_MULTIPLIER）
+    # 原逻辑只在「一张平仓单都没有」时才追价，导致一旦持仓网格就永远不跟随价格移动。
+    # 现放宽为：空仓时追价（旧行为），或轻仓时也追价（仓位 <= ALER_POSITION * TRAILING_MAX_POSITION_RATIO）。
+    # 重仓时仍不追价——那时往价格方向挂开仓单等于高位加仓，会推高持仓成本。
+    trailing_ratio = float(GRID_CONFIG.get("TRAILING_MAX_POSITION_RATIO", 0.3) or 0.0)
+    trailing_position_cap = float(GRID_CONFIG.get("ALER_POSITION", 0) or 0) * trailing_ratio
+    light_position = (
+        trailing_ratio > 0
+        and float(trading_state.current_position_size or 0.0) <= trailing_position_cap
+    )
+    allow_trailing = trading_state.close_orders_count == 0 or light_position
+    if allow_trailing and trading_state.open_orders_count > 0:
         step = trading_state.active_grid_signle_price
         gap_mult = float(GRID_CONFIG.get("OVER_RANGE_GAP_MULTIPLIER", 2.5))
         if not OPEN_SIDE_IS_ASK:  # 做多：最远买单 = 最低价
@@ -914,6 +1055,15 @@ async def _over_range_replenish_order():
             farthest_open = max(trading_state.open_orders.values())
             dist = farthest_open - trading_state.current_price
         if dist > step * gap_mult:
+            if light_position and trading_state.close_orders_count > 0:
+                logger.info(
+                    "轻仓追价触发: 当前仓位=%s <= 阈值=%s(ALER_POSITION*%s), 最远开仓价=%s, 当前价=%s",
+                    round(float(trading_state.current_position_size or 0.0), 6),
+                    round(trailing_position_cap, 6),
+                    trailing_ratio,
+                    format_price_for_display(farthest_open),
+                    format_price_for_display(trading_state.current_price or 0),
+                )
             await _over_range_trailing_open_order()
 
     # 检查开平仓间距
@@ -997,15 +1147,38 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
     if _announce_open_order_price_guard_state():
         return
     
-    if trading_state.open_orders_count >= GRID_CONFIG["MAX_TOTAL_ORDERS"]:
+    translate_enabled = bool(GRID_CONFIG.get("GRID_TRANSLATE_ENABLED", True))
+    # 开启平移后，超额的开仓单会在下方被撤掉，因此这里不再用 MAX_TOTAL_ORDERS 卡死向上补单，
+    # 否则买单会单向堆积到上限后彻底停止跟随价格。
+    if not translate_enabled and trading_state.open_orders_count >= GRID_CONFIG["MAX_TOTAL_ORDERS"]:
         logger.debug("大间距开仓补单: 跳过, 开仓单数=%s >= MAX_TOTAL_ORDERS=%s", trading_state.open_orders_count, GRID_CONFIG["MAX_TOTAL_ORDERS"])
         return
 
     # 大间距时允许补开仓单；若该笔成交，后续会按「开仓侧被吃单补单」挂出配对平仓单，无需因「上次成交是开仓侧」而跳过
+    step = float(trading_state.active_grid_signle_price or 0.0)
     multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
     new_price = round_price_to_precision(
-        nearest_open_price + (trading_state.active_grid_signle_price * multiplier)
+        nearest_open_price + (step * multiplier)
     )
+
+    # 可选：距市价过远时直接贴近市价挂单，而不是每轮只向上爬一档（激进，默认关闭）
+    if bool(GRID_CONFIG.get("OPEN_ORDER_FOLLOW_MARKET_ENABLED", False)) and step > 0:
+        follow_mult = float(GRID_CONFIG.get("OPEN_ORDER_FOLLOW_MARKET_GAP_MULT", 3.0) or 3.0)
+        cur = float(trading_state.current_price or 0.0)
+        dist_to_market = abs(cur - float(nearest_open_price))
+        if cur > 0 and dist_to_market > step * follow_mult:
+            # 做多：贴到市价下方一档；做空：贴到市价上方一档
+            follow_price = round_price_to_precision(
+                cur - step if not OPEN_SIDE_IS_ASK else cur + step
+            )
+            logger.info(
+                "开仓单贴近市价: 原计算价=%s, 改为=%s, 距市价=%s > %s*step",
+                format_price_for_display(new_price),
+                format_price_for_display(follow_price),
+                format_price_for_display(dist_to_market),
+                follow_mult,
+            )
+            new_price = follow_price
 
     # 若该价格已有开仓单（例如初始化刚挂的），则不再补，避免重复挂单
     if new_price in trading_state.open_orders.values():
@@ -1033,6 +1206,61 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
         else:
             trading_state.buy_orders[order_id] = new_price
         logger.info("大间距开仓补单成功: %s, %s", order_id, format_price_for_display(new_price))
+
+        # 网格平移：向价格方向补了一档后，撤掉最远的超额开仓单，
+        # 使网格整体跟随价格移动，而不是单向堆积直到撞上 MAX_TOTAL_ORDERS 后彻底静止。
+        if translate_enabled:
+            await _trim_furthest_open_orders()
+
+
+async def _trim_furthest_open_orders():
+    """
+    网格平移：开仓单数量超过 GRID_COUNT 时，撤掉离市价最远的若干张。
+
+    与「向价格方向补一档」配合，让开仓网格整体平移。
+    只撤网格单，不碰熔断占位单（pause_orders 本就不在 open_orders 中，这里再防御一次）。
+    """
+    from .grid_order import _cancel_orders
+
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG or {}
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+
+    grid_count = int(GRID_CONFIG.get("GRID_COUNT", 0) or 0)
+    if grid_count <= 0:
+        return
+
+    excess = trading_state.open_orders_count - grid_count
+    if excess < 1:
+        return
+
+    pause_orders = getattr(trading_state, "pause_orders", {}) or {}
+    items = [
+        (oid, float(price))
+        for oid, price in trading_state.open_orders.items()
+        if oid not in pause_orders
+    ]
+    if not items:
+        return
+
+    # 做多：最远 = 最低买价；做空：最远 = 最高卖价
+    items.sort(key=lambda kv: kv[1], reverse=bool(OPEN_SIDE_IS_ASK))
+    to_cancel = items[: min(excess, len(items))]
+    if not to_cancel:
+        return
+
+    order_ids = [str(oid) for oid, _ in to_cancel]
+    try:
+        await _cancel_orders(order_ids)
+        logger.info(
+            "网格平移撤单: 撤掉最远 %s 张开仓单, 价格=%s, 当前开仓单数=%s, GRID_COUNT=%s",
+            len(order_ids),
+            [format_price_for_display(p) for _, p in to_cancel],
+            trading_state.open_orders_count,
+            grid_count,
+        )
+    except Exception:
+        logger.exception("网格平移撤单失败: order_ids=%s", order_ids)
 
 
 async def _over_range_trailing_open_order():
@@ -1143,15 +1371,11 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
     
-    if trading_state.paired_close_retry_block_until > time.time():
-        remain = round(trading_state.paired_close_retry_block_until - time.time(), 2)
-        logger.info(
-            "配对平仓单重试窗口内，跳过大间距平仓补单: remain=%ss, target_price=%s",
-            remain,
-            trading_state.paired_close_target_price,
-        )
-        return
-    
+    # 配对平仓重试窗口：仅屏蔽「与在途目标价同档」的补单，避免整条兜底路径被关掉。
+    # 原逻辑在窗口内直接 return，导致配对失败后反而连唯一的兜底补单也停了。
+    paired_block_active = trading_state.paired_close_retry_block_until > time.time()
+    paired_target = float(trading_state.paired_close_target_price or 0.0)
+
     if (
         trading_state.last_filled_order_is_close_side
         and trading_state.close_orders_count > 0
@@ -1167,6 +1391,15 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
     new_price = round_price_to_precision(
         nearest_open_price + (step * 2 * multiplier)
     )
+
+    if paired_block_active and paired_target > 0 and step > 0:
+        if abs(new_price - paired_target) <= step * 0.5:
+            logger.info(
+                "大间距平仓补单跳过: 目标价 %s 与在途配对平仓单同档(target=%s)，避免重复挂单",
+                format_price_for_display(new_price),
+                format_price_for_display(paired_target),
+            )
+            return
 
     # 仅当 new_price 与已有平仓单「同档」（约 0.5*step 内）才跳过，避免重复挂单。
     # 若用整 step 判断，会误判：例如仅有卖单 2123.9、目标 2122 时 |2123.9-2122|<step 被跳过，

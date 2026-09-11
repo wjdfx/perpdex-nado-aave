@@ -271,9 +271,24 @@ async def check_order_fills(orders: dict):
                     logger.info("[WS] 开仓单成交已在同步路径补单，跳过 fill 事件补单: ID=%s", client_order_index)
             if not skip_replenish:
                 from .grid_replenish import replenish_grid
+                # 必须带超时：配对平仓在交易所持续拒单时会长时间重试，
+                # 而此处持有 replenish_grid_lock，一旦卡住会让主循环补单永远拿不到锁。
+                ws_timeout = float((GRID_CONFIG or {}).get("WS_REPLENISH_TIMEOUT_SEC", 30) or 30)
                 async with replenish_grid_lock:
-                    await replenish_grid(True, float(price), source="WS")
-                    trading_state.last_replenish_time = time.time()
+                    try:
+                        await asyncio.wait_for(
+                            replenish_grid(True, float(price), source="WS"),
+                            timeout=ws_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(
+                            "[WS] 成交补单超时(%.0fs)，已放弃本轮，缺口交由平仓单对账兜底: ID=%s, 价格=%s",
+                            ws_timeout,
+                            client_order_index,
+                            format_price_for_display(float(price)),
+                        )
+                    finally:
+                        trading_state.last_replenish_time = time.time()
 
 
 async def check_current_orders(position_delta: float = 0.0):

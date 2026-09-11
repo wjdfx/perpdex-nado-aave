@@ -114,6 +114,17 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
         # REST 对账（兜底）：WS 主驱动，REST 仅低频校准，避免 WS 漏消息导致本地状态漂移
         "REST_SYNC_INTERVAL_SEC": float(os.getenv("REST_SYNC_INTERVAL_SEC", "60")),  # REST 同步间隔秒（默认60）。过低会增加“瞬时漏单”误判风险
         "DISAPPEARED_ORDER_CONFIRM_SEC": float(os.getenv("DISAPPEARED_ORDER_CONFIRM_SEC", "3")),  # REST 检测到订单消失后延迟确认秒（默认3），避免短暂漏单被当成交
+        # 补单保护：WS 成交回调内的补单超时，防止配对平仓无限重试时持锁卡死整个补单系统
+        "WS_REPLENISH_TIMEOUT_SEC": float(os.getenv("WS_REPLENISH_TIMEOUT_SEC", "30")),  # WS 成交补单单次超时秒（默认30）
+        "PAIRED_CLOSE_STAGE3_MAX_RETRY": int(os.getenv("PAIRED_CLOSE_STAGE3_MAX_RETRY", "30")),  # 配对平仓 3x 阶段最大重试次数（默认30，约60秒），耗尽后交给仓位对账兜底
+        # 仓位对账：与成交事件无关的幂等兜底，周期性比对「可用仓位」与「平仓单总量」，补齐缺口
+        "CLOSE_ORDER_RECONCILE_ENABLED": _get_bool_env("CLOSE_ORDER_RECONCILE_ENABLED", True),  # 是否启用平仓单对账
+        "CLOSE_ORDER_RECONCILE_MAX_PER_ROUND": int(os.getenv("CLOSE_ORDER_RECONCILE_MAX_PER_ROUND", "3")),  # 每轮最多补几张，避免突发补单
+        # 追价：原逻辑仅在「一张平仓单都没有」时才追价，持仓后网格永远不跟随价格移动
+        "TRAILING_MAX_POSITION_RATIO": float(os.getenv("TRAILING_MAX_POSITION_RATIO", "0.3")),  # 仓位 <= ALER_POSITION*该比例时允许追价；0 表示恢复旧行为（仅空仓追价）
+        "GRID_TRANSLATE_ENABLED": _get_bool_env("GRID_TRANSLATE_ENABLED", True),  # 向上补开仓单后撤掉最远一张，使网格整体平移而非单向堆积
+        "OPEN_ORDER_FOLLOW_MARKET_ENABLED": _get_bool_env("OPEN_ORDER_FOLLOW_MARKET_ENABLED", False),  # 开仓单距市价过远时直接贴近市价挂单（激进，默认关闭）
+        "OPEN_ORDER_FOLLOW_MARKET_GAP_MULT": float(os.getenv("OPEN_ORDER_FOLLOW_MARKET_GAP_MULT", "3.0")),  # 距离超过该倍数步长才触发贴近市价
     }
     
     common = common_config.copy()
