@@ -215,6 +215,17 @@ async def replenish_grid(
     if filled_signal:
         trading_state._replenish_source = source
 
+    logger.info(
+        "补单入口: filled=%s, source=%s, 开仓单=%s, 平仓单=%s, 买单=%s, 卖单=%s, pause=%s",
+        filled_signal,
+        source,
+        trading_state.open_orders_count,
+        trading_state.close_orders_count,
+        len(trading_state.buy_orders),
+        len(trading_state.sell_orders),
+        trading_state.grid_pause,
+    )
+
     if trading_state.grid_pause:
         logger.info("网格交易处于暂停状态，跳过补单")
         return
@@ -1006,7 +1017,17 @@ async def _over_range_replenish_order():
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     
     if trading_state.grid_pause:
+        logger.info("大间距检查跳过: grid_pause=True（风控暂停中）")
         return
+
+    logger.info(
+        "大间距检查: 开仓单=%s, 平仓单=%s, 当前价=%s, 间距=%s, 仓位=%s",
+        trading_state.open_orders_count,
+        trading_state.close_orders_count,
+        format_price_for_display(trading_state.current_price or 0),
+        format_price_for_display(trading_state.active_grid_signle_price or 0),
+        round(float(trading_state.current_position_size or 0.0), 6),
+    )
 
     # 获取最近的平仓价格
     nearest_close_price = None
@@ -1045,6 +1066,16 @@ async def _over_range_replenish_order():
         and float(trading_state.current_position_size or 0.0) <= trailing_position_cap
     )
     allow_trailing = trading_state.close_orders_count == 0 or light_position
+    if not (allow_trailing and trading_state.open_orders_count > 0):
+        logger.info(
+            "追价未启用: allow_trailing=%s (平仓单=%s, 轻仓=%s, 仓位=%s, 阈值=%s), 开仓单=%s",
+            allow_trailing,
+            trading_state.close_orders_count,
+            light_position,
+            round(float(trading_state.current_position_size or 0.0), 6),
+            round(trailing_position_cap, 6),
+            trading_state.open_orders_count,
+        )
     if allow_trailing and trading_state.open_orders_count > 0:
         step = trading_state.active_grid_signle_price
         gap_mult = float(GRID_CONFIG.get("OVER_RANGE_GAP_MULTIPLIER", 2.5))
@@ -1054,6 +1085,13 @@ async def _over_range_replenish_order():
         else:  # 做空：最远卖单 = 最高价
             farthest_open = max(trading_state.open_orders.values())
             dist = farthest_open - trading_state.current_price
+        if dist <= step * gap_mult:
+            logger.info(
+                "追价未触发: 最远开仓价距当前价=%s <= %s*step=%s",
+                format_price_for_display(dist),
+                gap_mult,
+                format_price_for_display(step * gap_mult),
+            )
         if dist > step * gap_mult:
             if light_position and trading_state.close_orders_count > 0:
                 logger.info(
@@ -1275,9 +1313,15 @@ async def _over_range_trailing_open_order():
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
 
     if _announce_open_order_price_guard_state():
+        logger.info("追单跳过: 价格保护生效中")
         return
 
     if not trading_state.current_price or trading_state.open_orders_count == 0:
+        logger.info(
+            "追单跳过: current_price=%s, 开仓单数=%s",
+            trading_state.current_price,
+            trading_state.open_orders_count,
+        )
         return
 
     step = trading_state.active_grid_signle_price
@@ -1295,6 +1339,7 @@ async def _over_range_trailing_open_order():
 
     order_id, order_price = candidates[0]
     if order_id in getattr(trading_state, "pause_orders", {}):
+        logger.info("追单跳过: 最远单 %s 是熔断占位单", order_id)
         return
 
     if not OPEN_SIDE_IS_ASK:
@@ -1311,15 +1356,31 @@ async def _over_range_trailing_open_order():
             new_price = round_price_to_precision(current_price + step)
 
     if new_price <= 0:
+        logger.info("追单跳过: 计算价格非法 new_price=%s", new_price)
         return
 
     existing_prices = set(trading_state.open_orders.values())
     if any(abs(new_price - p) < step * 0.5 for p in existing_prices if p != order_price):
+        logger.info(
+            "追单跳过: 目标价 %s 的 0.5*step(%s) 内已有开仓单",
+            format_price_for_display(new_price),
+            format_price_for_display(step * 0.5),
+        )
         return
 
     if not OPEN_SIDE_IS_ASK and new_price >= current_price:
+        logger.info(
+            "追单跳过(做多): 目标价 %s >= 当前价 %s",
+            format_price_for_display(new_price),
+            format_price_for_display(current_price),
+        )
         return
     if OPEN_SIDE_IS_ASK and new_price <= current_price:
+        logger.info(
+            "追单跳过(做空): 目标价 %s <= 当前价 %s",
+            format_price_for_display(new_price),
+            format_price_for_display(current_price),
+        )
         return
 
     try:
