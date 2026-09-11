@@ -366,6 +366,28 @@ async def run_grid_trading(_exchange_type: str = "nado", grid_config: dict = Non
 
     risk_enabled = bool(CONFIG.get("RISK_ENABLED", True))
 
+    # 价格保护配置回显：原先只在 CONFIG 整体 dump 里，几十个键挤一行不易核对；
+    # 且状态播报只在「越界状态翻转」时才打，启动正常时一个字都没有。
+    _guard_on = bool(CONFIG.get("OPEN_ORDER_PRICE_GUARD_ENABLED", False))
+    _guard_min = CONFIG.get("OPEN_ORDER_PRICE_GUARD_MIN_PRICE")
+    _guard_max = CONFIG.get("OPEN_ORDER_PRICE_GUARD_MAX_PRICE")
+    if _guard_on:
+        _action = CONFIG.get("OPEN_ORDER_PRICE_GUARD_ACTION", "pause_open_orders")
+        logger.info(
+            "价格保护: 已启用 | 动作=%s | 下限=%s | 上限=%s",
+            "撤单并停机" if _action == "cancel_orders_and_stop" else "暂停开仓单",
+            _guard_min if _guard_min is not None else "未设置",
+            _guard_max if _guard_max is not None else "未设置",
+        )
+    else:
+        logger.info("价格保护: 未启用")
+        if _guard_min is not None or _guard_max is not None:
+            logger.warning(
+                "价格保护: 检测到已配置阈值(下限=%s, 上限=%s)，但 OPEN_ORDER_PRICE_GUARD_ENABLED 未开启，该功能不会生效",
+                _guard_min if _guard_min is not None else "未设置",
+                _guard_max if _guard_max is not None else "未设置",
+            )
+
     grid_trading = GridTrading(
         exchange=exchange,
         market_id=CONFIG["MARKET_ID"],
