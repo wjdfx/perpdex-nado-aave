@@ -176,6 +176,19 @@ def format_price_for_display(price: float) -> str:
     return s.rstrip("0").rstrip(".") if "." in s else s
 
 
+def format_amount_for_display(amount: float) -> str:
+    """
+    格式化数量（仓位、下单量等）。
+
+    不可改用 format_price_for_display —— 后者按 PRICE_PRECISION 取整，
+    在 PRICE_PRECISION=1 的标的（如 BTC）上会把 0.34 显示成 0，
+    日志里看起来像「可用仓位为 0」，与实际状态不符。
+    """
+    a = float(amount or 0.0)
+    s = f"{a:.6f}"
+    return s.rstrip("0").rstrip(".") if "." in s else s
+
+
 async def seconds_formatter(seconds: int) -> str:
     """
     将秒数格式化为可读的时间字符串
