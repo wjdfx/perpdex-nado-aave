@@ -1006,8 +1006,13 @@ class NadoAdapter(ExchangeInterface):
             
             return orders
         except Exception as e:
+            # 必须返回 None 而非 []：调用方用「空列表」表示「交易所确实没有订单」，
+            # 用 None 表示「查询失败」。若失败也返回 []，_sync_current_orders 会把
+            # 接口故障误判成「订单全部消失」，进而按成交处理并重建网格。
+            # _check_for_fills / _rebuild_order_digest_mapping / _sync_current_orders
+            # 均已按 None 语义处理。
             logger.error(f"get_orders 错误: {e}", exc_info=True)
-            return []
+            return None
 
     async def get_linked_signer(self) -> Optional[str]:
         """
@@ -1235,7 +1240,11 @@ class NadoAdapter(ExchangeInterface):
                 return
             
             orders = await self.get_orders()
-            if orders:
+            # 用 `is not None` 而非 `if orders`：订单被全部撤销时返回空列表，
+            # 旧写法会因空列表为 falsy 而完全不触发回调，策略侧无从得知
+            # 「现在一张订单都没有」，只能等 REST 对账（默认 60s）兜底。
+            # 查询失败返回 None，此时跳过本轮，不可当作「没有订单」。
+            if orders is not None:
                 # Normalize orders to CCXT format
                 normalized_orders = normalize_orders_list(orders)
                 logger.debug(f"轮询到 {len(orders)} 笔订单，已标准化 {len(normalized_orders)} 笔")

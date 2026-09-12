@@ -609,6 +609,21 @@ async def _sync_current_orders(position_delta: float = 0.0):
     disappeared_buy_orders = set(previous_buy_orders.keys()) - found_order_ids
     disappeared_sell_orders = set(previous_sell_orders.keys()) - found_order_ids
 
+    # 区分「成交」与「取消」的依据：成交必然改变仓位，取消不会。
+    # 记录两次对账之间的仓位变化，用于限制本轮最多能确认多少笔成交。
+    _grid_amount_for_fill_cap = float(GRID_CONFIG["GRID_AMOUNT"])
+    _cur_pos = float(trading_state.current_position_size or 0.0)
+    _prev_sync_pos = getattr(trading_state, "last_sync_position_size", None)
+    # 首次对账无基准，保守按 0 处理（消失单一律视为取消，不凭空记成交）
+    _pos_change = 0.0 if _prev_sync_pos is None else _cur_pos - float(_prev_sync_pos)
+    trading_state.last_sync_position_size = _cur_pos
+
+    if _grid_amount_for_fill_cap > 0:
+        max_open_fills = int(round(_pos_change / _grid_amount_for_fill_cap)) if _pos_change > 0 else 0
+        max_close_fills = int(round(-_pos_change / _grid_amount_for_fill_cap)) if _pos_change < 0 else 0
+    else:
+        max_open_fills = max_close_fills = 0
+
     # REST 消失单延迟确认（防止 REST 瞬时漏单）：首次发现只记录，超过 confirm 秒且仍消失才按成交处理
     confirm_sec = float(GRID_CONFIG.get("DISAPPEARED_ORDER_CONFIRM_SEC", 3.0))
     now = time.time()
@@ -684,12 +699,59 @@ async def _sync_current_orders(position_delta: float = 0.0):
             if now - float(first_ts) >= confirm_sec:
                 confirmed_close.append((oid, float(price)))
 
+        # 按仓位变化切分：超出仓位变化所能解释的部分不是成交，而是取消
+        # （手动撤单、交易所清退、REST 瞬时漏单等）。取消只清理本地状态，
+        # 不计 filled_count、不计收益、不触发配对补单，避免凭空产生虚假成交。
+        cancelled_open = []
+        if len(confirmed_open) > max_open_fills:
+            cancelled_open = confirmed_open[max_open_fills:]
+            confirmed_open = confirmed_open[:max_open_fills]
+
+        cancelled_close = []
+        if len(confirmed_close) > max_close_fills:
+            cancelled_close = confirmed_close[max_close_fills:]
+            confirmed_close = confirmed_close[:max_close_fills]
+
+        if cancelled_open or cancelled_close:
+            logger.warning(
+                "[REST] 消失单判定为取消(非成交): 开仓单=%s, 平仓单=%s, "
+                "两次对账间仓位变化=%s, 可解释成交上限(开/平)=%s/%s",
+                len(cancelled_open),
+                len(cancelled_close),
+                round(_pos_change, 6),
+                max_open_fills,
+                max_close_fills,
+            )
+            for oid, price in cancelled_open:
+                trading_state.rest_disappeared_open_candidates.pop(oid, None)
+                if not OPEN_SIDE_IS_ASK:
+                    trading_state.buy_orders.pop(oid, None)
+                else:
+                    trading_state.sell_orders.pop(oid, None)
+                logger.info(
+                    "[REST] 开仓单已取消: ID=%s, 价格=%s（不计成交）",
+                    oid,
+                    format_price_for_display(float(price)),
+                )
+            for oid, price in cancelled_close:
+                trading_state.rest_disappeared_close_candidates.pop(oid, None)
+                if not OPEN_SIDE_IS_ASK:
+                    trading_state.sell_orders.pop(oid, None)
+                else:
+                    trading_state.buy_orders.pop(oid, None)
+                logger.info(
+                    "[REST] 平仓单已取消: ID=%s, 价格=%s（不计成交、不计收益）",
+                    oid,
+                    format_price_for_display(float(price)),
+                )
+
         if confirmed_open or confirmed_close:
             logger.warning(
-                "[REST] 消失单确认: open=%s, close=%s (confirm_sec=%.2f)",
+                "[REST] 消失单确认成交: open=%s, close=%s (confirm_sec=%.2f, 仓位变化=%s)",
                 len(confirmed_open),
                 len(confirmed_close),
                 confirm_sec,
+                round(_pos_change, 6),
             )
 
         # 根因修复：合并处理 confirmed_open，只触发一次 replenish
