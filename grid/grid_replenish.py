@@ -139,8 +139,11 @@ def _close_side_has_order_near_price(
     open_side_is_ask: bool,
 ) -> bool:
     """
-    平仓侧是否已有与 target_price 在 0.5*step 内的挂单。
-    与大间距平仓补单 _over_range_replenish_close_order 的容差规则一致。
+    平仓侧是否已有与 target_price 在 0.75*step 内的挂单。
+
+    容差取 0.75*step：高于半步长（仍能拦住真正的重复挂单），低于真实最小格点
+    间距（GRID_SPREAD 取整后相邻档位可能只差 0.875*step），避免把「相邻一格的
+    正常止盈单」误判成同档而整张跳过——跳过后该格只能靠对账兜底补，价位会偏。
     """
     if step <= 0:
         return False
@@ -148,7 +151,7 @@ def _close_side_has_order_near_price(
     existing_prices = list(close_side.values())
     if not existing_prices:
         return False
-    tol = float(step) * 0.5
+    tol = float(step) * 0.75
     return any(abs(float(p) - float(target_price)) <= tol for p in existing_prices)
 
 
@@ -350,9 +353,9 @@ async def _on_open_side_filled(trade_price: float = 0.0):
             trading_state, stage1_target, step_pc, OPEN_SIDE_IS_ASK
         ):
             logger.info(
-                "配对平仓跳过: 首档目标价 %s 在容差 0.5*step(%s) 内已有平仓单，避免同价重复挂单",
+                "配对平仓跳过: 首档目标价 %s 在容差 0.75*step(%s) 内已有平仓单，避免同价重复挂单",
                 format_price_for_display(stage1_target),
-                format_price_for_display(step_pc * 0.5),
+                format_price_for_display(step_pc * 0.75),
             )
         else:
             success, order_id, final_price = await _place_paired_close_order_with_retry(
@@ -502,16 +505,27 @@ async def _place_paired_close_order_with_retry(
                 if _is_post_only_cross(err, error_code):
                     current_price = float(trading_state.current_price or 0.0)
                     if current_price and current_price > 0:
-                        if not OPEN_SIDE_IS_ASK:
-                            try_price = round_price_to_precision(current_price + step * (price_retry + 1))
-                        else:
-                            try_price = round_price_to_precision(current_price - step * (price_retry + 1))
+                        # 调价必须仍落在以 fill_price 为锚的格点上。
+                        # 原实现用 current_price ± step*(n) 直接贴市价，市价持续变动会
+                        # 使该价脱离格点，与配对平仓（成交价 + step）的格点错位，
+                        # 表现为卖单间距忽大忽小。
+                        # 做法：从 fill_price 按整步长继续外推，取第一个不跨盘的档位。
+                        sign = 1 if not OPEN_SIDE_IS_ASK else -1
+                        gap = (current_price - float(fill_price)) * sign
+                        # 需要的档数：让目标价越过市价至少一档
+                        need_steps = int(gap / step) + 1 + price_retry
+                        if need_steps <= stage_multiplier:
+                            need_steps = stage_multiplier + 1 + price_retry
+                        try_price = round_price_to_precision(
+                            float(fill_price) + step * need_steps * sign
+                        )
                         logger.info(
-                            "配对平仓 post-only 跨盘调价重试: 原价=%s, 市价=%s, 第%d档价=%s, error_code=%s",
+                            "配对平仓 post-only 跨盘调价重试: 原价=%s, 市价=%s, 第%d次调价=%s(成交价%+d档), error_code=%s",
                             format_price_for_display(target_price),
                             format_price_for_display(current_price),
                             price_retry + 1,
                             format_price_for_display(try_price),
+                            need_steps * sign,
                             error_code,
                         )
                         continue
@@ -948,23 +962,60 @@ async def _reconcile_close_orders():
         missing,
     )
 
-    # 已占用价位（含在途配对平仓单的目标价），用 0.5*step 容差去重
+    # 已占用价位（含在途配对平仓单的目标价），容差 0.75*step：
+    # 高于半步长（拦住重复），低于真实最小格点间距（不误杀正常档位）
     occupied = [float(p) for p in trading_state.close_orders.values()]
     if trading_state.paired_close_retry_block_until > time.time():
         paired_target = float(trading_state.paired_close_target_price or 0.0)
         if paired_target > 0:
             occupied.append(paired_target)
 
+    dedup_tolerance = step * 0.75
+
     def _is_free(price: float) -> bool:
-        return not any(abs(price - p) <= step * 0.5 for p in occupied)
+        return not any(abs(price - p) <= dedup_tolerance for p in occupied)
+
+    direction = 1 if not OPEN_SIDE_IS_ASK else -1
+
+    # 锚点必须落在网格格点上，不能用市价：
+    # 市价每时每刻在动，current_price + k*step 算出的价会脱离格点，
+    # 与配对平仓（成交价 + step）产生的格点错位，表现为卖单间距忽大忽小。
+    # 优先级：已有平仓单 -> 已有开仓单 + step -> 市价（都没有时才退回）
+    if trading_state.close_orders_count > 0:
+        # 取最靠近市价的那张平仓单作锚（做多=最低卖价，做空=最高买价）
+        anchor = (
+            min(trading_state.close_orders.values())
+            if not OPEN_SIDE_IS_ASK
+            else max(trading_state.close_orders.values())
+        )
+        anchor_source = "已有平仓单"
+    elif trading_state.open_orders_count > 0:
+        # 取最靠近市价的那张开仓单，向平仓方向推一档
+        nearest_open = (
+            max(trading_state.open_orders.values())
+            if not OPEN_SIDE_IS_ASK
+            else min(trading_state.open_orders.values())
+        )
+        anchor = round_price_to_precision(nearest_open + step * direction)
+        anchor_source = "已有开仓单+step"
+    else:
+        anchor = round_price_to_precision(current_price + step * direction)
+        anchor_source = "市价(无挂单可锚)"
+
+    logger.info(
+        "平仓单对账锚点: %s=%s, 步长=%s, 方向=%s",
+        anchor_source,
+        format_price_for_display(anchor),
+        format_price_for_display(step),
+        "向上" if direction > 0 else "向下",
+    )
 
     placed = 0
-    # 从市价外侧第一档起逐档向外找空位（做多向上、做空向下）
-    direction = 1 if not OPEN_SIDE_IS_ASK else -1
-    for k in range(1, 60):
+    # 从锚点起按整步长向外逐档找空位，保证落在同一格点序列上
+    for k in range(0, 60):
         if placed >= missing:
             break
-        candidate = round_price_to_precision(current_price + step * k * direction)
+        candidate = round_price_to_precision(anchor + step * k * direction)
         if candidate <= 0:
             break
         # 平仓单必须在市价的正确一侧
@@ -1358,7 +1409,7 @@ async def _over_range_trailing_open_order():
     # 追单价一律以「已有开仓单」为锚按整步长推进，保证落在网格格点上。
     # 原实现在 nearest±step 顶到市价时回退成 current_price∓step，该价格锚定的是
     # 实时市价（BTC 最小变动 1 点），不在格点上；市价每蠕动几点就会插入一档，
-    # 与去重容差 0.5*step 叠加后把网格局部加密成半步长（实测出现 4 点间距，配置为 8）。
+    # 与当时的去重容差 0.5*step 叠加后把网格局部加密成半步长（实测 4 点间距，配置为 8）。
     # 正确语义：nearest±step 已越过市价，说明最高/最低开仓单距市价不足一个步长，
     # 网格本就贴着市价，此时无需追单。
     if not OPEN_SIDE_IS_ASK:
@@ -1388,13 +1439,14 @@ async def _over_range_trailing_open_order():
         logger.info("追单跳过: 计算价格非法 new_price=%s", new_price)
         return
 
-    # 容差取 0.9*step：任何不足一个完整步长的价位都拒绝，避免网格被加密。
-    # 原值 0.5*step 会放行「正好相距半步长」的单子（严格小于判断），是 4 点间距的帮凶。
+    # 容差取 0.75*step：高于半步长（拦住 4 点加密），低于真实最小格点间距
+    # （GRID_SPREAD 取整后相邻档位可能只差 0.875*step，如 step=8 时的 7 点间距），
+    # 避免误杀合法档位。0.9*step 会卡在 7 与 8 之间，余量过薄。
     existing_prices = set(trading_state.open_orders.values())
-    dedup_tolerance = step * 0.9
+    dedup_tolerance = step * 0.75
     if any(abs(new_price - p) < dedup_tolerance for p in existing_prices if p != order_price):
         logger.info(
-            "追单跳过: 目标价 %s 的 0.9*step(%s) 内已有开仓单",
+            "追单跳过: 目标价 %s 的 0.75*step(%s) 内已有开仓单",
             format_price_for_display(new_price),
             format_price_for_display(dedup_tolerance),
         )
@@ -1486,7 +1538,7 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
     )
 
     if paired_block_active and paired_target > 0 and step > 0:
-        if abs(new_price - paired_target) <= step * 0.5:
+        if abs(new_price - paired_target) <= step * 0.75:
             logger.info(
                 "大间距平仓补单跳过: 目标价 %s 与在途配对平仓单同档(target=%s)，避免重复挂单",
                 format_price_for_display(new_price),
@@ -1494,17 +1546,17 @@ async def _over_range_replenish_close_order(nearest_open_price: float):
             )
             return
 
-    # 仅当 new_price 与已有平仓单「同档」（约 0.5*step 内）才跳过，避免重复挂单。
+    # 仅当 new_price 与已有平仓单「同档」（约 0.75*step 内）才跳过，避免重复挂单。
     # 若用整 step 判断，会误判：例如仅有卖单 2123.9、目标 2122 时 |2123.9-2122|<step 被跳过，
     # 导致 2119.7 与 2123.9 之间缺一档（2121.9/2122），大间距无法填补。
     close_side_orders = (
         trading_state.sell_orders if not OPEN_SIDE_IS_ASK else trading_state.buy_orders
     )
     existing_prices = list(close_side_orders.values())
-    same_level_tolerance = step * 0.5
+    same_level_tolerance = step * 0.75
     if step > 0 and any(abs(float(p) - new_price) <= same_level_tolerance for p in existing_prices):
         logger.info(
-            "大间距平仓补单跳过: 目标价 %s 的 0.5*step(%s) 内已有平仓单，无需重复挂单",
+            "大间距平仓补单跳过: 目标价 %s 的 0.75*step(%s) 内已有平仓单，无需重复挂单",
             format_price_for_display(new_price),
             format_price_for_display(same_level_tolerance),
         )
