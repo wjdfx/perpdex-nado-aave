@@ -10,7 +10,11 @@ import time
 from typing import List, Optional, Tuple
 
 from . import grid_state
-from .grid_state import format_price_for_display, round_price_to_precision
+from .grid_state import (
+    format_price_for_display,
+    format_amount_for_display,
+    round_price_to_precision,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1207,8 +1211,8 @@ async def _over_range_replenish_order():
             else:
                 logger.debug(
                     "大间距: 跳过平仓侧补单, 可用=%s < need=%s",
-                    format_price_for_display(trading_state.available_position_size),
-                    format_price_for_display(need_for_one_more),
+                    format_amount_for_display(trading_state.available_position_size),
+                    format_amount_for_display(need_for_one_more),
                 )
 
         if not tried_open and not tried_close:
@@ -1218,7 +1222,7 @@ async def _over_range_replenish_order():
             if dist_to_close <= min_dist:
                 reasons.append("平仓侧: 当前价距最近平仓价=%s <= 1.5*step=%s" % (format_price_for_display(dist_to_close), format_price_for_display(min_dist)))
             if dist_to_close > min_dist and not can_add_close:
-                reasons.append("平仓侧: 可用仓位=%s < 需再挂一格=%s" % (format_price_for_display(trading_state.available_position_size), format_price_for_display(need_for_one_more)))
+                reasons.append("平仓侧: 可用仓位=%s < 需再挂一格=%s" % (format_amount_for_display(trading_state.available_position_size), format_amount_for_display(need_for_one_more)))
             logger.info("大间距触发但未补单: %s", "; ".join(reasons))
 
 
