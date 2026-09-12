@@ -1205,10 +1205,23 @@ async def _over_range_replenish_open_order(nearest_open_price: float):
         cur = float(trading_state.current_price or 0.0)
         dist_to_market = abs(cur - float(nearest_open_price))
         if cur > 0 and dist_to_market > step * follow_mult:
-            # 做多：贴到市价下方一档；做空：贴到市价上方一档
-            follow_price = round_price_to_precision(
-                cur - step if not OPEN_SIDE_IS_ASK else cur + step
-            )
+            # 必须落在以 nearest_open_price 为锚的网格格点上：
+            # 直接用 cur∓step 会脱离格点，市价蠕动时插出半步长的单子（见追单同类问题）。
+            # 做法：从 nearest_open_price 按整步长向市价推进，取仍在市价正确一侧的最后一档。
+            steps_to_market = int(dist_to_market / step)
+            if steps_to_market >= 1:
+                follow_price = round_price_to_precision(
+                    float(nearest_open_price) + step * steps_to_market * multiplier
+                )
+                # 边界保护：推进后若越过市价，回退一档
+                if (not OPEN_SIDE_IS_ASK and follow_price >= cur) or (
+                    OPEN_SIDE_IS_ASK and follow_price <= cur
+                ):
+                    follow_price = round_price_to_precision(
+                        follow_price - step * multiplier
+                    )
+            else:
+                follow_price = new_price
             logger.info(
                 "开仓单贴近市价: 原计算价=%s, 改为=%s, 距市价=%s > %s*step",
                 format_price_for_display(new_price),
@@ -1342,29 +1355,48 @@ async def _over_range_trailing_open_order():
         logger.info("追单跳过: 最远单 %s 是熔断占位单", order_id)
         return
 
+    # 追单价一律以「已有开仓单」为锚按整步长推进，保证落在网格格点上。
+    # 原实现在 nearest±step 顶到市价时回退成 current_price∓step，该价格锚定的是
+    # 实时市价（BTC 最小变动 1 点），不在格点上；市价每蠕动几点就会插入一档，
+    # 与去重容差 0.5*step 叠加后把网格局部加密成半步长（实测出现 4 点间距，配置为 8）。
+    # 正确语义：nearest±step 已越过市价，说明最高/最低开仓单距市价不足一个步长，
+    # 网格本就贴着市价，此时无需追单。
     if not OPEN_SIDE_IS_ASK:
         nearest = max(trading_state.open_orders.values())
         new_price = round_price_to_precision(nearest + step)
-        # 做多：新买单必须低于市价；若算出的价已≥当前价，改为当前价下方一档，实现“跟价”挂单
         if new_price >= current_price:
-            new_price = round_price_to_precision(current_price - step)
+            logger.info(
+                "追单跳过(做多): 最高开仓价 %s 距市价 %s 不足一个步长(%s)，网格已贴近市价",
+                format_price_for_display(nearest),
+                format_price_for_display(current_price),
+                format_price_for_display(step),
+            )
+            return
     else:
         nearest = min(trading_state.open_orders.values())
         new_price = round_price_to_precision(nearest - step)
-        # 做空：新卖单必须高于市价；若算出的价已≤当前价，改为当前价上方一档
         if new_price <= current_price:
-            new_price = round_price_to_precision(current_price + step)
+            logger.info(
+                "追单跳过(做空): 最低开仓价 %s 距市价 %s 不足一个步长(%s)，网格已贴近市价",
+                format_price_for_display(nearest),
+                format_price_for_display(current_price),
+                format_price_for_display(step),
+            )
+            return
 
     if new_price <= 0:
         logger.info("追单跳过: 计算价格非法 new_price=%s", new_price)
         return
 
+    # 容差取 0.9*step：任何不足一个完整步长的价位都拒绝，避免网格被加密。
+    # 原值 0.5*step 会放行「正好相距半步长」的单子（严格小于判断），是 4 点间距的帮凶。
     existing_prices = set(trading_state.open_orders.values())
-    if any(abs(new_price - p) < step * 0.5 for p in existing_prices if p != order_price):
+    dedup_tolerance = step * 0.9
+    if any(abs(new_price - p) < dedup_tolerance for p in existing_prices if p != order_price):
         logger.info(
-            "追单跳过: 目标价 %s 的 0.5*step(%s) 内已有开仓单",
+            "追单跳过: 目标价 %s 的 0.9*step(%s) 内已有开仓单",
             format_price_for_display(new_price),
-            format_price_for_display(step * 0.5),
+            format_price_for_display(dedup_tolerance),
         )
         return
 
